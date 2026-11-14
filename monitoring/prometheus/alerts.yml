@@ -1,0 +1,94 @@
+groups:
+  - name: agi
+    rules:
+      - alert: AgiDown
+        expr: up{job="agi"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: The agent API is not answering scrapes.
+          description: Prometheus has not been able to scrape {{ $labels.instance }} for 2 minutes.
+
+      - alert: AgiModelCircuitOpen
+        expr: agi_model_circuit_open == 1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Calls to the language model are failing.
+          description: The circuit breaker around the model has been open for 2 minutes, so only tasks that need no model are being answered.
+
+      - alert: AgiHighFailureRate
+        expr: |
+          sum(rate(agi_runs_total{outcome=~"failure|error|timeout"}[10m]))
+            / clamp_min(sum(rate(agi_runs_total[10m])), 0.001) > 0.3
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: More than 30% of tasks are failing.
+          description: '{{ $value | humanizePercentage }} of tasks failed, errored or timed out over the last 10 minutes.'
+
+      - alert: AgiSlowRuns
+        expr: histogram_quantile(0.95, sum by (le) (rate(agi_run_duration_seconds_bucket[10m]))) > 60
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Tasks are slow.
+          description: 95% of tasks now take up to {{ $value | humanizeDuration }}.
+
+      - alert: AgiServerErrors
+        expr: sum(rate(agi_http_requests_total{status=~"5.."}[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: The API is returning server errors.
+          description: '{{ $value | humanize }} responses per second have a 5xx status.'
+
+      - alert: AgiConnectionsRefused
+        expr: increase(agi_http_connections_refused_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: The API is at its connection limit.
+          description: Connections were refused in the last 5 minutes. Raise max_connections or add capacity.
+
+      - alert: AgiAuthFailures
+        expr: increase(agi_http_rejected_total{reason="unauthorized"}[5m]) > 20
+        labels:
+          severity: warning
+        annotations:
+          summary: Many requests with a wrong or missing token.
+          description: '{{ $value | humanize }} unauthorised requests in 5 minutes. This can be a misconfigured client or someone guessing.'
+
+      - alert: AgiUnsupportedAnswers
+        expr: |
+          sum(rate(agi_ungrounded_answers_total[30m]))
+            / clamp_min(sum(rate(agi_runs_total[30m])), 0.001) > 0.1
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: Answers contain figures that no tool result supports.
+          description: '{{ $value | humanizePercentage }} of answers over the last 30 minutes had unsupported figures.'
+
+      - alert: AgiDriftAlarm
+        expr: agi_drift_alarms > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: The drift monitor raised an alarm.
+          description: Live results have moved away from the recorded baseline. See /v1/stats for which measure.
+
+      - alert: AgiTraceExportDropping
+        expr: increase(agi_trace_spans_exported_total{result="dropped"}[10m]) > 0
+        for: 10m
+        labels:
+          severity: info
+        annotations:
+          summary: Trace spans are being dropped.
+          description: The trace collector is unreachable or too slow, so spans are being discarded.

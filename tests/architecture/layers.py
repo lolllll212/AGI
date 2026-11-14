@@ -62,4 +62,6 @@ def violations() -> list[str]:
 
 
 if __name__ == "__main__":
-    print("\n".join(violations()) or "layers are clean")
+    found = violations()
+    print("\n".join(found) or "layers are clean")
+    raise SystemExit(1 if found else 0)

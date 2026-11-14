@@ -1,0 +1,39 @@
+# Settings for `python -m agi serve --config config/agi.toml`.
+# Every key is optional and matches a command-line flag (--max-steps is max_steps);
+# a flag given on the command line wins. Secrets do not go here: the model key and the
+# API token are read from the environment (or a file) named below.
+
+[model]
+# model = "gpt-4o-mini"                 # any model at an OpenAI-compatible endpoint
+# base_url = "http://localhost:11434/v1" # for example a local Ollama or vLLM server
+api_key_env = "OPENAI_API_KEY"
+demo = false                             # true = the scripted demonstration model, no key needed
+
+[agent]
+max_steps = 12
+context_tokens = 6000                    # working context kept per run; 0 = unlimited
+sandbox = "process"                      # process | wasm | docker | auto
+network = false                          # true enables the http_get tool
+read_only = false                        # true forbids writing to the workspace
+# workspace = "./workspace"              # the only directory the agent may read and write
+# state = "./state"                      # long-term memory, learned routes, conversations
+# plugins = "./plugins"                  # extra tools; plugin code runs unsandboxed
+
+[server]
+host = "127.0.0.1"                       # anything else requires a token
+port = 8000
+token_env = "AGI_API_TOKEN"
+# token_file = "/run/secrets/agi_api_token"
+# keys_file = "./secrets/keys.json"      # {"alice": "<secret>", "ci": "<secret>"}: one key per caller
+# tls_cert = "./secrets/cert.pem"
+# tls_key = "./secrets/key.pem"
+# rate_limit = 5                         # requests per second, per caller
+max_connections = 64
+ui = true                                # the web console at /
+metrics = true                           # Prometheus metrics at /metrics (behind the token)
+allow_framing = false
+
+[observability]
+# traces = "./state/traces.jsonl"
+# otlp_endpoint = "http://localhost:4318/v1/traces"
+# access_log = "-"                       # one JSON line per request; "-" = standard output

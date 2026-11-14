@@ -11,7 +11,7 @@ from agi.infrastructure.adapters.llm.openai_compat import OpenAICompatLLM
 from agi.infrastructure.adapters.llm.scripted import ScriptedLLM
 from agi.infrastructure.cli.main import DEMOS, main
 
-README = Path(__file__).resolve().parents[1] / "README.md"
+README = Path(__file__).resolve().parents[2] / "README.md"
 
 
 @pytest.mark.parametrize("name", sorted(DEMOS))

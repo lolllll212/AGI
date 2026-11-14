@@ -31,10 +31,11 @@ def _headers(server, immutable: bool) -> dict[str, str]:
     return headers
 
 
-def _file(ctx: Context, relative: str, immutable: bool = False) -> Response:
+def _file(ctx: Context, relative: str, immutable: bool = False, within: str = "") -> Response:
     root = Path(ctx.server.ui_dir or STATIC).resolve()
+    base = (root / within).resolve() if within else root
     target = (root / relative).resolve()
-    if root not in target.parents or not target.is_file():  # also refuses "../" and absolute paths
+    if base not in target.parents or not target.is_file():  # also refuses "../" and absolute paths
         raise HTTPError(404, "not_found", f"no such file: /{relative}")
     kind = _TYPES.get(target.suffix.lower()) or mimetypes.guess_type(target.name)[0] or "application/octet-stream"
     return Response(200, target.read_bytes(), kind, _headers(ctx.server, immutable))
@@ -48,7 +49,7 @@ def index(ctx: Context):
 
 
 def asset(ctx: Context, path: str):
-    return _file(ctx, f"assets/{path}", immutable=True)
+    return _file(ctx, f"assets/{path}", immutable=True, within="assets")
 
 
 def favicon(ctx: Context):

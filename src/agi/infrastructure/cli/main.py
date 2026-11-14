@@ -516,6 +516,8 @@ def _command(name: str, argv: list[str]) -> int:
         parser.add_argument("--port", type=int, default=8000)
         parser.add_argument("--token-env", default="AGI_API_TOKEN",
                             help="environment variable holding the bearer token (required for a non-local --host)")
+        parser.add_argument("--token-file", help="read the bearer token from this file instead (for example a "
+                                                 "Docker secret); wins over --token-env")
         parser.add_argument("--state", help="directory for the agent's long-term memory (default: in RAM)")
         parser.add_argument("--sandbox", default="process", choices=("process", "wasm", "docker", "auto"))
         parser.add_argument("--plugins", help="directory of plugins whose tools the agent also gets "
@@ -560,6 +562,12 @@ def _command(name: str, argv: list[str]) -> int:
                     keys = json.load(handle)
                 if not isinstance(keys, dict) or not all(isinstance(v, str) for v in keys.values()):
                     parser.error("--keys-file must contain a JSON object of name -> secret")
+            token = os.environ.get(options.token_env) or None
+            if options.token_file:
+                with open(options.token_file, encoding="utf-8") as handle:
+                    token = handle.read().strip() or None
+                if token is None:
+                    parser.error(f"--token-file {options.token_file} is empty")
             workspace, examples = options.workspace, []
             if options.demo:
                 from agi.eval import FULL_SUITE, demo_llm, demo_workspace
@@ -585,7 +593,7 @@ def _command(name: str, argv: list[str]) -> int:
                       f"(workspace: {workspace})", flush=True)
             if extra_tools:
                 print("plugin tools: " + ", ".join(tool.name for tool in extra_tools), flush=True)
-            serve(service, options.host, options.port, os.environ.get(options.token_env) or None,
+            serve(service, options.host, options.port, token,
                   options.rate_limit, keys=keys, certfile=options.tls_cert, keyfile=options.tls_key,
                   max_connections=options.max_connections, metrics=options.metrics, ui=options.ui,
                   allow_framing=options.allow_framing,

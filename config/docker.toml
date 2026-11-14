@@ -1,0 +1,16 @@
+# Settings used by docker-compose.yml. The model, its key and the API token come from .env and secrets/.
+
+[agent]
+workspace = "/data/workspace"
+state = "/data/state"
+plugins = "/app/plugins"
+sandbox = "process"
+
+[server]
+host = "0.0.0.0"
+port = 8000
+token_file = "/run/secrets/agi_api_token"
+rate_limit = 10
+
+[observability]
+access_log = "-"

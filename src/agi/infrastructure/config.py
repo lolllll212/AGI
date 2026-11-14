@@ -45,6 +45,7 @@ class Settings(Model):
     host: str = "127.0.0.1"
     port: int = Field(default=8000, ge=0, le=65535)
     token_env: str = "AGI_API_TOKEN"
+    token_file: str | None = None
     keys_file: str | None = None
     tls_cert: str | None = None
     tls_key: str | None = None

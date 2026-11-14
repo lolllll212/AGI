@@ -1,0 +1,26 @@
+# Where alerts go. As shipped they are only collected (see them at alertmanager:9093);
+# add a receiver for your team and point `route.receiver` at it.
+
+route:
+  receiver: none
+  group_by: [alertname]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - matchers: [severity="critical"]
+      receiver: none
+      repeat_interval: 1h
+
+receivers:
+  - name: none
+  # - name: team
+  #   slack_configs:
+  #     - api_url_file: /etc/alertmanager/slack_webhook
+  #       channel: "#agents"
+  #       send_resolved: true
+
+inhibit_rules:
+  # If the API is down, the other alerts about it add nothing.
+  - source_matchers: [alertname="AgiDown"]
+    target_matchers: [alertname=~"Agi.+"]

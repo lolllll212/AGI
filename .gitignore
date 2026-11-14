@@ -1,3 +1,4 @@
+# Python
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -5,6 +6,20 @@ __pycache__/
 .venv/
 build/
 dist/
+
+# Node
+node_modules/
+
+# state the agent writes
 *.db
 *.db-wal
 *.db-shm
+/state/
+/workspace/
+
+# secrets: never commit these
+.env
+/secrets/*
+!/secrets/README.md
+/monitoring/nginx/ssl/*
+!/monitoring/nginx/ssl/README.md

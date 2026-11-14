@@ -12,7 +12,7 @@ import hashlib
 import json
 from dataclasses import dataclass, field
 
-from ..sandbox import SandboxPolicy
+from ..core.sandbox import SandboxPolicy
 
 HARD_BOUNDARIES = (
     "Tool code only ever runs inside the sandbox - during review and after approval.",

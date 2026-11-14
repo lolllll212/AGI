@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Sequence
 
-from ..sandbox import SandboxResult
+from ..core.sandbox import SandboxResult
 from .agents import ToolNeed
 from .forge import ReviewContext, ToolForge, Verdict
 from .ledger import Ledger

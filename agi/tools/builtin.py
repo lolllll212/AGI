@@ -25,7 +25,7 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from ..sandbox import Sandbox
+from ..core.sandbox import Sandbox
 from .base import Param, Tool, ToolError, ToolRegistry
 
 # --------------------------------------------------------------------------- #

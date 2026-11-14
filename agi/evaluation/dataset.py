@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from typing import Iterable
 
-from ..react import SYSTEM, Run
+from ..core.react import SYSTEM, Run
 
 
 def to_chat_example(run: Run, system: str = "", include_errors: bool = True) -> dict:

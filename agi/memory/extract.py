@@ -11,7 +11,7 @@ import json
 import re
 from typing import Protocol
 
-from ..llm import LLM, extract_json
+from ..core.llm import LLM, extract_json
 from .models import FAILURE, KINDS, SUCCESS, Episode, Lesson
 
 ERROR_HINTS = {

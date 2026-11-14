@@ -8,6 +8,7 @@ observation the agent can read and react to.
 """
 from __future__ import annotations
 
+import contextvars
 import inspect
 import json
 import re
@@ -41,6 +42,22 @@ class Param:
     description: str = ""
     required: bool = True
     default: Any = None
+    enum: list | None = None            # the only values allowed, if restricted
+    items: str | None = None            # element type of an array, if known
+
+
+def _param_schema(self) -> dict:
+    schema: dict = {"type": self.type, "description": self.description}
+    if self.enum:
+        schema["enum"] = list(self.enum)
+    if self.items:
+        schema["items"] = {"type": self.items}
+    if not self.required and self.default is not None:
+        schema["default"] = self.default
+    return schema
+
+
+Param.schema = _param_schema            # type: ignore[attr-defined]
 
 
 @dataclass
@@ -53,7 +70,7 @@ class Tool:
     timeout_s: float = 30.0
 
     def signature(self) -> str:
-        parts = [f"{name}: {p.type}" + ("" if p.required else f" = {json.dumps(p.default)}")
+        parts = [f"{name}: {p.type}" + ("" if p.required else f" = {json.dumps(p.default, default=str)}")
                  for name, p in self.params.items()]
         return f"{self.name}({', '.join(parts)})"
 
@@ -62,8 +79,7 @@ class Tool:
         return {"type": "function", "function": {
             "name": self.name, "description": self.description,
             "parameters": {"type": "object",
-                           "properties": {n: {"type": p.type, "description": p.description}
-                                          for n, p in self.params.items()},
+                           "properties": {n: p.schema() for n, p in self.params.items()},
                            "required": [n for n, p in self.params.items() if p.required]}}}
 
 
@@ -94,31 +110,12 @@ def _render(value: Any) -> str:
 
 def from_function(fn: Callable, name: str | None = None, description: str | None = None,
                   risk: str = "safe", timeout_s: float = 30.0) -> Tool:
-    """Build a :class:`Tool` from a plain function's signature and docstring.
+    """Build a :class:`Tool` from a plain function's signature, type hints and docstring.
 
-    Parameter descriptions are read from docstring lines of the form ``name: text``.
+    Google, NumPy and reST docstrings are understood, as are plain ``name: text`` lines.
     """
-    doc = inspect.getdoc(fn) or ""
-    lines = doc.splitlines()
-    notes = {}
-    for line in lines:
-        head, sep, tail = line.strip().partition(":")
-        if sep and head.isidentifier():
-            notes[head] = tail.strip()
-    params = {}
-    for pname, p in inspect.signature(fn).parameters.items():
-        if p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD):
-            raise TypeError(f"tool functions cannot take *args/**kwargs ({fn.__name__})")
-        annotation = p.annotation if p.annotation is not p.empty else str
-        if isinstance(annotation, str):                    # from __future__ import annotations
-            annotation = {"str": str, "int": int, "float": float, "bool": bool,
-                          "list": list, "dict": dict}.get(annotation.split("[")[0].split(" ")[0], str)
-        required = p.default is p.empty
-        params[pname] = Param(_JSON_TYPES.get(annotation, "string"), notes.get(pname, ""),
-                              required, None if required else p.default)
-    summary = description or " ".join(
-        l.strip() for l in doc.split("\n\n")[0].splitlines()) or fn.__name__
-    return Tool(name or fn.__name__, summary, fn, params, risk, timeout_s)
+    from .introspect import tool_from_function
+    return tool_from_function(fn, name, description, risk, timeout_s)
 
 
 class ToolRegistry:
@@ -135,15 +132,23 @@ class ToolRegistry:
             self.register(tool)
 
     # -- registration ------------------------------------------------------ #
-    def register(self, tool: Tool | Callable, **kwargs) -> Tool:
+    def register(self, tool: Tool | Callable, replace: bool = False, **kwargs) -> Tool:
         if not isinstance(tool, Tool):
             tool = from_function(tool, **kwargs)
         if not tool.name.isidentifier():
             raise ValueError(f"tool name {tool.name!r} must be an identifier")
-        if tool.name in self._tools:
+        if tool.name in self._tools and not replace:
             raise ValueError(f"a tool named {tool.name!r} is already registered")
         self._tools[tool.name] = tool
+        for listener in getattr(self, "_listeners", ()):
+            listener(tool)
         return tool
+
+    def on_register(self, listener: Callable[[Tool], None]) -> None:
+        """Call ``listener(tool)`` whenever a tool is added (routers use this to stay current)."""
+        if not hasattr(self, "_listeners"):
+            self._listeners = []
+        self._listeners.append(listener)
 
     def tool(self, fn: Callable | None = None, **kwargs):
         """Decorator form of :meth:`register`."""
@@ -174,13 +179,22 @@ class ToolRegistry:
     def names(self) -> list[str]:
         return list(self._tools)
 
-    def describe(self) -> str:
-        """The tool list as it is shown to a model."""
+    def describe(self, names: Iterable[str] | None = None) -> str:
+        """The tool list as it is shown to a model (optionally only the tools in ``names``)."""
+        wanted = None if names is None else set(names)
         lines = []
         for tool in self._tools.values():
+            if wanted is not None and tool.name not in wanted:
+                continue
             lines.append(f"- {tool.signature()}: {tool.description}")
-            lines += [f"    {name}: {p.description}" for name, p in tool.params.items() if p.description]
+            for name, p in tool.params.items():
+                note = p.description + (f" (one of: {', '.join(map(str, p.enum))})" if p.enum else "")
+                if note:
+                    lines.append(f"    {name}: {note}")
         return "\n".join(lines)
+
+    def unregister(self, name: str) -> bool:
+        return self._tools.pop(name, None) is not None
 
     def schemas(self) -> list[dict]:
         return [tool.schema() for tool in self._tools.values()]
@@ -215,6 +229,8 @@ class ToolRegistry:
             if not _CHECKS[param.type](value):
                 return (f"argument '{name}' must be of type {param.type}, "
                         f"got {type(value).__name__}")
+            if param.enum and value not in param.enum:
+                return f"argument '{name}' must be one of {', '.join(map(repr, param.enum))}; got {value!r}"
             bound[name] = value
         return bound
 
@@ -247,7 +263,9 @@ class ToolRegistry:
                 box["error"] = exc
 
         started = time.perf_counter()
-        thread = threading.Thread(target=work, daemon=True, name=f"tool-{name}")
+        # Run in a copy of the caller's context so tracing spans and depth counters carry over.
+        thread = threading.Thread(target=contextvars.copy_context().run, args=(work,), daemon=True,
+                                  name=f"tool-{name}")
         thread.start()
         thread.join(tool.timeout_s)
         seconds = time.perf_counter() - started

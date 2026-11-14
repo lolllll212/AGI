@@ -12,8 +12,8 @@ import json
 from dataclasses import dataclass
 from typing import Any, Mapping, Protocol
 
-from ..llm import LLM, extract_json
-from ..sandbox import Sandbox, check_source
+from ..core.llm import LLM, extract_json
+from ..core.sandbox import Sandbox, check_source
 from .forge import Review, ReviewContext, ToolProposal
 
 

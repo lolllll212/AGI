@@ -23,7 +23,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from typing import Any, Sequence
 
-from ..sandbox import Sandbox, SandboxResult, check_source
+from ..core.sandbox import Sandbox, SandboxResult, check_source
 from .ledger import Ledger
 from .policy import SafetyPolicy
 

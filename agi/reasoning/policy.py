@@ -28,7 +28,7 @@ import random
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
-from ..reasoning.problems import OPS, Op
+from .problems import OPS, Op
 
 _FN = {name: eval(f"lambda x: {op.expr}") for name, op in OPS.items()}     # trusted: DSL constants
 
@@ -439,7 +439,7 @@ class Comparison:
 
 def compare(policy: SearchPolicy, tasks: Sequence, budget: int = 1500, seed: int = 0) -> Comparison:
     """Search every task twice - without and with the policy - under the same budget."""
-    from ..reasoning import MCTS, PipelineSynthesis
+    from . import MCTS, PipelineSynthesis
 
     def solve(examples, guide):
         problem = PipelineSynthesis(examples, policy=guide)

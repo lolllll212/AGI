@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping
 
-from ..sandbox import Sandbox
+from ..core.sandbox import Sandbox
 
 
 @dataclass

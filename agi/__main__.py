@@ -11,6 +11,7 @@ With a model (any OpenAI-compatible endpoint; the key is read from the environme
     python -m agi chat --model MODEL --workspace DIR --memory agent.db
     python -m agi eval --model MODEL
     python -m agi train --out policy.json
+    python -m agi serve --model MODEL --workspace DIR --state DIR    # JSON API on 127.0.0.1:8000
 """
 from __future__ import annotations
 
@@ -20,12 +21,12 @@ import sys
 import tempfile
 import time
 
-from .agent import LearningAgent, Task
+from .core.agent import LearningAgent, Task
 from .collective import (HARD_BOUNDARIES, Builder, Collective, SafetyPolicy, SafetyReviewer,
                          SpecReviewer, ToolNeed, ToolProposal)
 from .memory import FAILURE, SUCCESS, Episode, MemoryEngine, Step
 from .reasoning import MCTS, Game24, PipelineSynthesis, TreeOfThoughts, check_argument
-from .sandbox import Sandbox, SandboxPolicy
+from .core.sandbox import Sandbox, SandboxPolicy
 from .world import CausalLearner, GroundedAgent, ProjectileWorld, SCMWorld, WorldModel, ideal_range
 
 
@@ -267,9 +268,9 @@ def demo_agent() -> None:
 
 
 def demo_react() -> None:
-    from .evals import SUITE, reference_llm, run_suite, write_fixtures
-    from .llm import ScriptedLLM
-    from .react import ReActAgent
+    from .evaluation.suite import SUITE, reference_llm, run_suite, write_fixtures
+    from .core.llm import ScriptedLLM
+    from .core.react import ReActAgent
     from .tools import standard_tools
     from .training import export_jsonl
 
@@ -355,10 +356,89 @@ def demo_training() -> None:
           "   the search, never what counts as a solution.")
 
 
+def demo_engine() -> None:
+    import asyncio
+    import re
+
+    from .api import AgentService
+    from .evaluation import SUITE, Evaluator, reference_llm, write_fixtures
+    from .core.engine import CognitiveEngine
+    from .tools import standard_tools
+
+    title("8. THE ENGINE - reflex when it can, deliberate when it must, measured throughout")
+    print("   (The 'model' is a small stand-in that queries sales.csv; routing, memory, tools,\n"
+          "    guardrails, tracing and evaluation are the real components.)")
+    calls = {"n": 0}
+
+    def model(prompt: str) -> str:
+        calls["n"] += 1
+        if "Split this task" in prompt:
+            return ('{"subtasks": ["What is the total amount for North in sales.csv?", '
+                    '"What is the total amount for East in sales.csv?"]}')
+        if "Combine the results" in prompt:
+            return "East (3,739.10) sold more than North (3,090.75)."
+        task = prompt.rsplit("\n\nTask: ", 1)[-1]
+        region = next((r for r in ("North", "South", "East") if r in task.split("\n")[0]), "North")
+        if "Observation:" not in task:
+            return ('Thought: query the file.\nAction: query_data\nAction Input: {"file": "sales.csv", "sql": '
+                    f'"SELECT ROUND(SUM(amount), 2) FROM data WHERE region = \'{region}\'"}}')
+        figure = float(re.findall(r"\d+\.\d+", task.rsplit("Observation:", 1)[1])[-1])
+        return f"Thought: the query returned it.\nFinal Answer: The {region} total is {figure:,.2f}."
+
+    workspace = write_fixtures(tempfile.mkdtemp(prefix="agi-demo-"))
+    service = AgentService.create(model, workspace=workspace)
+
+    step("Routing: each task takes the cheapest path that can answer it")
+    for task in ("hello", "What is 12 * (3 + 4)?", "What is the total amount for North in sales.csv?",
+                 "What is the total amount for South in sales.csv?"):
+        before = calls["n"]
+        result = asyncio.run(service.ask(task))
+        print(f"   {task!r}\n      -> {result.mode:<7} {calls['n'] - before} model call(s), {result.tool_calls} tool call(s): "
+              f"{result.answer}\n         why: {result.route.reason}")
+    print("   The South question was answered with no model call: the North run was stored as a\n"
+          "   procedure, adapted (North -> South), re-run against the real file, and re-phrased\n"
+          "   from the fresh result. Had the re-run failed, the engine would have escalated.")
+
+    step("Self-healing tools: a failing snippet is diagnosed, patched and re-run in the sandbox")
+    healed = service.engine.tools.call("python", {"code": "print(round(math.sqrt(3090.75), 2))"})
+    for line in healed.output.splitlines():
+        print(f"   {line}")
+
+    step("Guardrails and tracing: secrets are scrubbed before anything is recorded")
+    leaked = asyncio.run(service.ask("What is the total amount for East in sales.csv? "
+                                     "(my key is sk-abcdefghijklmnopqrstuvwxyz123456)"))
+    recorded = next(e for e in service.trace(leaked.trace_id) if e["kind"] == "run")["attributes"]["task"]
+    kinds = [e["kind"] for e in service.trace(leaked.trace_id)]
+    print(f"   answer:   {leaked.answer}\n   in trace: {recorded}")
+    print(f"   the trace holds {len(kinds)} events: " + ", ".join(f"{kinds.count(k)} {k}" for k in dict.fromkeys(kinds)))
+
+    step("Parallel sub-tasks: split, solve at the same time, combine")
+    solved = asyncio.run(service.solve_parallel("Compare the North and East totals in sales.csv"))
+    for part in solved.parts:
+        print(f"   part: {part.task}  ->  {part.answer}")
+    print(f"   combined: {solved.answer}")
+    service.close()
+
+    step("Evaluation: a stored baseline turns 'it seems worse' into a named regression")
+    def agent(broken=()):
+        def make(space, task):
+            llm = (lambda prompt: "Final Answer: I am not sure.") if task.name in broken else reference_llm(task)
+            return CognitiveEngine(llm, standard_tools(workspace=space))
+        return make
+
+    evaluator = Evaluator(agent(), tasks=SUITE, store=tempfile.mkdtemp(prefix="agi-demo-"))
+    baseline, _ = evaluator.check("demo", label="monday")
+    print(f"   baseline: {sum(s.success for s in baseline.scores)}/{len(baseline.scores)} tasks pass, "
+          f"{baseline.cost():.2f} calls per task (replaying the reference solutions)")
+    _, comparison = evaluator.check("demo", label="tuesday", make_agent=agent(broken=("top_region",)))
+    for line in comparison.report().splitlines():
+        print(f"   {line}")
+
+
 DEMOS = {"memory": demo_memory, "reasoning": demo_reasoning, "world": demo_world,
          "collective": demo_collective, "agent": demo_agent, "react": demo_react,
-         "training": demo_training}
-COMMANDS = ("run", "chat", "eval", "train")
+         "training": demo_training, "engine": demo_engine}
+COMMANDS = ("run", "chat", "eval", "train", "serve")
 
 
 # --------------------------------------------------------------------------- #
@@ -379,8 +459,8 @@ def _model_options(parser: argparse.ArgumentParser) -> None:
 
 
 def _build_agent(options, workspace=None, memory=None, llm=None):
-    from .llm import OpenAICompatLLM
-    from .react import ReActAgent
+    from .core.llm import OpenAICompatLLM
+    from .core.react import ReActAgent
     from .tools import standard_tools
     llm = llm or OpenAICompatLLM(options.model, options.base_url,
                                  os.environ.get(options.api_key_env, ""), stop=["\nObservation:"])
@@ -415,6 +495,31 @@ def _command(name: str, argv: list[str]) -> int:
         return 0
 
     _model_options(parser)
+    if name == "serve":
+        parser.add_argument("--host", default="127.0.0.1", help="address to listen on (default: local only)")
+        parser.add_argument("--port", type=int, default=8000)
+        parser.add_argument("--token-env", default="AGI_API_TOKEN",
+                            help="environment variable holding the bearer token (required for a non-local --host)")
+        parser.add_argument("--state", help="directory for the agent's long-term memory (default: in RAM)")
+        parser.add_argument("--sandbox", default="process", choices=("process", "wasm", "docker", "auto"))
+        parser.add_argument("--traces", help="append every trace event to this JSONL file")
+        options = parser.parse_args(argv)
+        if not options.model:
+            parser.error("--model is required (no model is bundled with this package)")
+        from .api import AgentService, serve
+        from .core.engine import EngineConfig
+        from .core.llm import OpenAICompatLLM
+        llm = OpenAICompatLLM(options.model, options.base_url, os.environ.get(options.api_key_env, ""),
+                              stop=["\nObservation:"])
+        try:
+            service = AgentService.create(
+                llm, workspace=options.workspace, memory_dir=options.state, sandbox=options.sandbox,
+                network=options.network, read_only=options.read_only, trace_path=options.traces,
+                config=EngineConfig(max_steps=options.max_steps))
+            serve(service, options.host, options.port, os.environ.get(options.token_env) or None)
+        except (ValueError, RuntimeError) as exc:
+            parser.error(str(exc))
+        return 0
     if name == "run":
         parser.add_argument("task", help="what the agent should do")
     if name == "eval":
@@ -424,7 +529,7 @@ def _command(name: str, argv: list[str]) -> int:
     options = parser.parse_args(argv)
 
     if name == "eval":
-        from .evals import reference_llm, run_suite
+        from .evaluation.suite import reference_llm, run_suite
         if not options.model and not options.reference:
             parser.error("give --model MODEL to score a model, or --reference to check the suite itself")
         options.quiet = True
@@ -447,7 +552,7 @@ def _command(name: str, argv: list[str]) -> int:
             if not options.quiet:
                 print(f"[{run}]")
             return 0 if run.finished else 1
-        from .react import Conversation
+        from .core.react import Conversation
         chat = Conversation(agent)
         print("Type a task, or 'exit' to leave.")
         while True:

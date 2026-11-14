@@ -14,8 +14,8 @@ from dataclasses import dataclass
 from fractions import Fraction
 from typing import Any, Mapping, Sequence
 
-from ..llm import LLM, extract_code
-from ..sandbox import Sandbox
+from ..core.llm import LLM, extract_code
+from ..core.sandbox import Sandbox
 from .problem import Problem, Verdict
 
 

@@ -14,7 +14,7 @@ from typing import Callable, Iterable, Sequence
 from pydantic import Field
 
 from ..core.types import Model
-from ..memory.embed import HashingEmbedder, cosine, tokens
+from ..memory.embed import ConceptEmbedder, cosine, tokens
 from .base import Param, Tool, ToolError, ToolRegistry
 from .introspect import tool_from_source
 
@@ -25,16 +25,38 @@ class ToolMatch(Model):
     why: list[str] = Field(default_factory=list)          # words the task and the tool share
 
 
+# What people ask for when they need each built-in tool, in their words rather than the tool's.
+DEFAULT_HINTS: dict[str, str] = {
+    "calculator": "arithmetic how much is add subtract multiply divide percent percentage interest exact sum of numbers",
+    "python": "write code script simulate loop algorithm statistics complex computation run program",
+    "current_time": "today now what day date is it how many days until since deadline weekday this week month year",
+    "list_files": "which files exist what is in the folder directory workspace",
+    "read_file": "open show the contents of a text file document log",
+    "search_files": "grep find lines containing a word pattern occurrences errors in logs mention",
+    "write_file": "save create export a report output file",
+    "query_data": "csv table spreadsheet rows columns total average count highest lowest per group filter join "
+                  "orders sales customers data",
+    "http_get": "download url website web page online internet api link",
+    "remember": "store save note a fact for later future sessions",
+    "recall": "what do we know from earlier previous sessions memory lessons",
+}
+
+
 class SemanticToolRouter:
     """Ranks the tools in a registry by relevance to a task."""
 
     def __init__(self, registry: ToolRegistry, embed: Callable[[str], dict] | None = None,
                  always: Iterable[str] = (), hints: dict[str, str] | None = None):
-        """``always`` tools are shown whatever the task; ``hints`` add search keywords to a tool."""
+        """``embed`` is a function, or an object with an ``embed`` method, that turns text into a sparse
+        vector (default: :class:`~agi.memory.embed.ConceptEmbedder`; pass
+        :class:`~agi.core.llm.OpenAICompatEmbedder` for real semantic matching).
+        ``always`` tools are shown whatever the task; ``hints`` add search keywords to a tool."""
         self.registry = registry
-        self._embed = embed or HashingEmbedder().embed
+        self._embed = getattr(embed, "embed", embed) or ConceptEmbedder().embed
         self.always = set(always)
-        self.hints = dict(hints or {})
+        self.hints = dict(DEFAULT_HINTS)
+        for name, words in (hints or {}).items():           # your hints add to the built-in ones
+            self.hints[name] = f"{self.hints.get(name, '')} {words}".strip()
         self._vectors: dict[str, dict] = {}
         self._words: dict[str, set[str]] = {}
         for tool in registry:

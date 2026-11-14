@@ -69,7 +69,7 @@ def extractive_summary(messages: list[Message], max_tokens: int = 200) -> str:
         if not text:
             continue
         if message.role == "summary":
-            lines.append(text)
+            lines.append(re.sub(r"^\[Summary of \d+ earlier messages\]\s*", "", text))
         elif message.role == "user":
             lines.append(f"User asked: {text[:160]}")
         elif message.role == "tool":
@@ -78,6 +78,8 @@ def extractive_summary(messages: list[Message], max_tokens: int = 200) -> str:
             lines.append(f"{name}{status} returned: {text[:120]}")
         elif message.role == "assistant":
             lines.append(f"Agent: {text[:140]}")
+    width = 160 if max_tokens >= 120 else 80
+    lines = [line[:width] for line in lines]
     kept: list[str] = []
     used = 0
     # Keep the first line (the original ask) and then as many of the latest as fit.
@@ -129,20 +131,21 @@ class WorkingMemory:
         message.tokens = self.count(message.content)
         self.shrunk += 1
 
-    def _summarise(self, messages: list[Message]) -> str:
+    def _summarise(self, messages: list[Message], limit: int | None = None) -> str:
+        limit = self.summary_tokens if limit is None else max(30, min(self.summary_tokens, limit))
         if self.summarizer is not None:
             transcript = "\n".join(f"{m.role.upper()}: {m.content[:1500]}" for m in messages)
             prompt = ("Summarise this part of an agent's work so that it can continue without the "
                       "original. Keep: the goal, decisions made, facts and figures found (exactly), "
                       f"errors hit and what fixed them, and anything still to do. At most "
-                      f"{self.summary_tokens} tokens.\n\n{transcript}\n\nSummary:")
+                      f"{limit} tokens.\n\n{transcript}\n\nSummary:")
             try:
                 text = self.summarizer(prompt).strip()
-                if text:
+                if text and self.count(text) <= 1.5 * limit:   # a summary that ignores its limit is not used
                     return text
             except Exception:                              # a failed summary must not lose the run
                 pass
-        return extractive_summary(messages, self.summary_tokens)
+        return extractive_summary(messages, limit)
 
     def compact(self, target: int | None = None) -> int:
         """Bring the context down to ``target`` tokens (default ``low_water * budget``).
@@ -154,42 +157,56 @@ class WorkingMemory:
         if before <= target:
             return 0
         movable = [i for i, m in enumerate(self.messages) if not m.pinned]
-        old = movable[: max(0, len(movable) - self.keep_recent)]
+        fixed = before - sum(self.messages[i].tokens for i in movable)
+        # Keep the last ``keep_recent`` messages whole if they fit; when the messages are large, keep
+        # fewer (never less than the last exchange) so that older ones are summarised, not lost.
+        keep = min(self.keep_recent, len(movable))
+        while keep > 2 and fixed + sum(self.messages[i].tokens for i in movable[len(movable) - keep:]) > target:
+            keep -= 1
+        old = movable[: len(movable) - keep]
 
         for index in old:                                  # 1. shrink bulky old messages
             if self.tokens <= target:
                 break
             self._shrink(self.messages[index])
 
-        if self.tokens > target and len(old) >= 2:         # 2. summarise the old stretch
+        if self.tokens > target and old:                   # 2. summarise the old stretch
             chunk = [self.messages[i] for i in old]
-            summary = self._summarise(chunk)
-            note = Message(role="summary", content=f"[Summary of {len(chunk)} earlier messages]\n{summary}",
-                           tokens=0, meta={"replaces": len(chunk)})
-            note.tokens = self.count(note.content)
-            if note.tokens < sum(m.tokens for m in chunk):
-                first = old[0]
-                gone = set(old)
-                self.messages = [m for i, m in enumerate(self.messages) if i not in gone]
-                self.messages.insert(first, note)
-                self.summarised += len(chunk)
-                self.compactions += 1
+            replaced = sum(m.meta.get("replaces", 1) if m.role == "summary" else 1 for m in chunk)
+            if len(chunk) >= 2 or chunk[0].role != "summary":
+                room = target - (self.tokens - sum(m.tokens for m in chunk)) - 12
+                summary = self._summarise(chunk, room)     # sized to fit beside what is kept
+                note = Message(role="summary", content=f"[Summary of {replaced} earlier messages]\n{summary}",
+                               tokens=0, meta={"replaces": replaced})
+                note.tokens = self.count(note.content)
+                if note.tokens < sum(m.tokens for m in chunk):
+                    first = old[0]
+                    gone = set(old)
+                    self.messages = [m for i, m in enumerate(self.messages) if i not in gone]
+                    self.messages.insert(first, note)
+                    self.summarised += len(chunk)
+                    self.compactions += 1
 
-        while self.tokens > self.budget:                   # 3. sliding window: drop the oldest
+        if self.tokens > self.budget:                      # 3. still too big: shorten what is left
+            for message in self.messages:
+                if not message.pinned and self.tokens > self.budget:
+                    self._shrink(message)
+        while self.tokens > self.budget:                   # 4. last resort: drop the oldest
             victims = [i for i, m in enumerate(self.messages) if not m.pinned]
             if len(victims) <= 1:
                 break
-            del self.messages[victims[0]]
+            plain = [i for i in victims[:-1] if self.messages[i].role != "summary"]
+            del self.messages[plain[0] if plain else victims[0]]   # a summary goes only when nothing else can
             self.dropped += 1
-        if self.tokens > self.budget:                      # one message bigger than the whole budget
-            for message in self.messages:
-                if not message.pinned:
-                    self._shrink(message)
         return before - self.tokens
 
     # -- rendering --------------------------------------------------------- #
-    def render(self) -> str:
-        text = "\n\n".join(f"{m.role.upper()}: {m.content}" for m in self.messages)
+    def track(self, text: str) -> str:
+        """Record a prompt as sent, for :attr:`cache_hit_ratio`. Returns it unchanged.
+
+        Call this with the *whole* prompt when the context is rendered in a
+        custom format, so that the ratio describes what the provider saw.
+        """
         if self._last_render is not None:
             shared = 0
             for a, b in zip(self._last_render, text):
@@ -200,6 +217,9 @@ class WorkingMemory:
             self._cache_total += len(text)
         self._last_render = text
         return text
+
+    def render(self) -> str:
+        return self.track("\n\n".join(f"{m.role.upper()}: {m.content}" for m in self.messages))
 
     def as_chat(self) -> list[dict]:
         """Messages in the OpenAI chat format (summaries become system notes)."""
@@ -215,6 +235,16 @@ class WorkingMemory:
         return ContextStats(tokens=self.tokens, budget=self.budget, messages=len(self.messages),
                             compactions=self.compactions, dropped=self.dropped, shrunk=self.shrunk,
                             summarised_messages=self.summarised, cache_hit_ratio=round(self.cache_hit_ratio, 4))
+
+    def dump(self) -> list[dict]:
+        """The messages as plain data, for saving; :meth:`load` restores them."""
+        return [{"role": m.role, "content": m.content, "pinned": m.pinned, "meta": m.meta} for m in self.messages]
+
+    def load(self, messages: list[dict]) -> "WorkingMemory":
+        self.messages = [Message(role=m["role"], content=m["content"], pinned=bool(m.get("pinned")),
+                                 tokens=self.count(m["content"]), meta=dict(m.get("meta") or {})) for m in messages]
+        self._last_render = None
+        return self
 
     def clear(self, keep_pinned: bool = True) -> None:
         self.messages = [m for m in self.messages if m.pinned] if keep_pinned else []

@@ -101,6 +101,8 @@ class EngineResult(Model):
     llm_calls: int = 0
     repairs: int = 0
     plans_tried: int = 0
+    compactions: int = 0                 # times the context window had to condense or drop earlier steps
+    prompt_reuse: float | None = None    # share of each prompt that repeated the previous one's start
     escalated: bool = False              # the reflex path failed and deliberation took over
     trace_id: str | None = None
     seconds: float = 0.0

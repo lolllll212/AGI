@@ -251,6 +251,7 @@ class Run:
     learned: list = field(default_factory=list)
     seconds: float = 0.0
     error: str | None = None
+    context: Any = None                 # ContextStats, when a working-memory window was used
 
     @property
     def finished(self) -> bool:
@@ -300,7 +301,12 @@ class ReActAgent:
     def __init__(self, llm: LLM, tools: ToolRegistry, memory=None, max_steps: int = 12,
                  verifier: Callable | None | str = "grounding", max_challenges: int = 1,
                  max_context_chars: int = 24_000, tags: Iterable[str] = (),
-                 system: str | None = None, on_step: Callable[[ReActStep], None] | None = None):
+                 system: str | None = None, on_step: Callable[[ReActStep], None] | None = None,
+                 working=None):
+        """``working`` is an optional :class:`~agi.memory.working.WorkingMemory`: the steps taken are
+        then kept under its token budget (old output shortened, then summarised, then dropped) instead
+        of the simpler character-based shortening. It is emptied at the start of every run."""
+        self.working = working
         self.llm, self.tools, self.memory = llm, tools, memory
         self.max_steps, self.max_challenges = max_steps, max_challenges
         self.verifier = GroundingVerifier() if verifier == "grounding" else verifier
@@ -321,7 +327,25 @@ class ReActAgent:
                         if "find_tools" in self.tools else "\n(Showing the tools most relevant to this task.") + ")"
         return self.system.replace("{tools}", listing)
 
+    @staticmethod
+    def _head(step: ReActStep) -> str:
+        head = f"Thought: {step.thought}\n" if step.thought else ""
+        if step.action:
+            head += f"Action: {step.action}\nAction Input: {json.dumps(step.args, ensure_ascii=False)}\n"
+        return head
+
     def _scratchpad(self, steps: Sequence[ReActStep], budget: int) -> str:
+        if self.working is not None:                       # the token-budgeted context window decides
+            parts = []
+            for message in self.working.messages:
+                if message.role == "summary":
+                    parts.append(f"{message.content}\n(The steps above were condensed to save space; "
+                                 f"figures in the summary were copied from real observations.)\n")
+                elif message.role == "tool":
+                    parts.append(f"Observation: {message.content}\n")
+                else:
+                    parts.append(message.content)
+            return "".join(parts)
         blocks = []
         for step in steps:
             head = ""
@@ -349,7 +373,8 @@ class ReActAgent:
             parts.append(f"EARLIER IN THIS CONVERSATION\n{context}")
         head = "\n\n".join(parts) + f"\n\nTask: {task}\n"
         pad = self._scratchpad(steps, max(2000, self.max_context_chars - len(head)))
-        return head + pad + closing + "Thought:"
+        text = head + pad + closing + "Thought:"
+        return self.working.track(text) if self.working is not None else text
 
     # -- run --------------------------------------------------------------- #
     def run(self, task: str, check: Callable[[str], bool] | None = None, context: str = "") -> Run:
@@ -369,8 +394,14 @@ class ReActAgent:
         if self.verifier is not None:
             run.grounded = False
 
+        if self.working is not None:
+            self.working.clear(keep_pinned=False)
+
         def note(step: ReActStep) -> None:
             run.steps.append(step)
+            if self.working is not None:                   # one message for what was done, one for what came back
+                self.working.add("assistant", self._head(step))
+                self.working.add("tool", step.observation, tool=step.action or "note", ok=step.ok)
             if self.on_step:
                 self.on_step(step)
 
@@ -446,6 +477,8 @@ class ReActAgent:
         else:
             run.success = run.finished and run.grounded is not False
         run.seconds = time.perf_counter() - started
+        if self.working is not None:
+            run.context = self.working.stats()
         if self.memory is not None:
             self._remember(run)
         return run

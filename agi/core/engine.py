@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Literal, Sequence
@@ -24,6 +25,7 @@ from typing import Any, Callable, Iterable, Literal, Sequence
 from pydantic import Field
 
 from ..memory.procedural import render_answer
+from ..memory.working import WorkingMemory
 from ..reasoning.planner import Execution, Plan, PlanProblem, search_plans
 from ..tools.base import Tool, ToolRegistry, ToolResult
 from ..tools.managed import ManagedRegistry
@@ -31,7 +33,7 @@ from ..tools.router import SemanticToolRouter
 from .guardrails import Guardrails
 from .react import _FAILURES, GroundingVerifier, ReActAgent, ReActStep
 from .resilience import BudgetExceeded, CircuitBreaker, CircuitOpen, LoopDetector, RateLimiter, StepBudget
-from .router import Router, RouterConfig
+from .router import RouteLearner, Router, RouterConfig
 from .tracing import Tracer
 from .types import EngineResult, Mode, Model, Route, StepRecord
 
@@ -62,6 +64,8 @@ class EngineConfig(Model):
     max_challenges: int = Field(default=1, ge=0)
     loop_repeats: int = Field(default=3, ge=2)           # identical results from one tool before it is a loop
     system_prompt: str | None = None
+    context_tokens: int = Field(default=6000, ge=0)      # token budget for the steps taken so far (0 = no window)
+    summarize_context: bool = False                      # let the model write the summaries (costs model calls)
     router: RouterConfig = Field(default_factory=RouterConfig)
 
 
@@ -77,6 +81,8 @@ class _Outcome:
     error: str | None = None
     plans_tried: int = 0
     plan: Plan | None = None
+    compactions: int = 0
+    prompt_reuse: float | None = None
 
 
 class _RunState:
@@ -139,9 +145,11 @@ class CognitiveEngine:
     def __init__(self, llm: Callable[[str], str] | None = None, tools: ToolRegistry | None = None, memory=None,
                  guardrails: Guardrails | None = None, tracer: Tracer | None = None,
                  config: EngineConfig | None = None, breaker: CircuitBreaker | None = None,
-                 rate_limiter: RateLimiter | None = None, healer=None, tags: Iterable[str] = ()):
+                 rate_limiter: RateLimiter | None = None, healer=None, tags: Iterable[str] = (),
+                 embed=None):
         """``memory`` is a :class:`~agi.memory.HierarchicalMemory` (optional); ``llm`` is any
-        ``callable(prompt) -> str`` (optional: without one only the reflex path can answer)."""
+        ``callable(prompt) -> str`` (optional: without one only the reflex path can answer);
+        ``embed`` is an embedding function or object used to match tasks to tools."""
         self.llm, self.memory, self.healer = llm, memory, healer
         self.config = config or EngineConfig()
         self.tracer = tracer or Tracer()
@@ -160,10 +168,13 @@ class CognitiveEngine:
             from ..tools.builtin import evaluate
         except Exception:                                   # pragma: no cover
             evaluate = None
+        directory = getattr(memory, "directory", None)
+        learner = RouteLearner(os.path.join(directory, "routing.json") if directory else None) \
+            if self.config.router.learn_routes else None
         self.router = Router(self.tools, getattr(memory, "procedural", None), getattr(memory, "episodic", None),
-                             self.config.router, evaluate=evaluate)
+                             self.config.router, evaluate=evaluate, learner=learner)
         self.tool_router = SemanticToolRouter(
-            self.tools, always=[n for n in ("list_tools", "find_tools") if n in self.tools])
+            self.tools, embed=embed, always=[n for n in ("list_tools", "find_tools") if n in self.tools])
         self.breaker = breaker or CircuitBreaker(failure_threshold=4, reset_after=30.0, name="model")
         self.rate_limiter = rate_limiter
         self.stats = {"runs": 0, "reflex": 0, "react": 0, "deliberate": 0, "escalations": 0, "blocked": 0,
@@ -244,10 +255,15 @@ class CognitiveEngine:
                 self.tracer.event("thought", step.action or "reflection", text=step.thought)
 
         lessons = getattr(self.memory, "lessons", None) if self.config.learn else None
-        agent = ReActAgent(self._model(state), tools, memory=lessons, max_steps=self.config.max_steps,
+        model = self._model(state)
+        # A fresh window per run: runs may overlap (run_many), so the window is never shared.
+        window = WorkingMemory(budget=self.config.context_tokens,
+                               summarizer=model if self.config.summarize_context else None) \
+            if self.config.context_tokens else None
+        agent = ReActAgent(model, tools, memory=lessons, max_steps=self.config.max_steps,
                            verifier="grounding" if self.config.verify else None,
                            max_challenges=self.config.max_challenges, tags=self.tags,
-                           system=self.config.system_prompt, on_step=on_step)
+                           system=self.config.system_prompt, on_step=on_step, working=window)
         if self.config.tool_k:
             agent.visible = self.tool_router.select(task, self.config.tool_k)
         agent.briefing = self._briefing(task, plan)
@@ -255,8 +271,17 @@ class CognitiveEngine:
         steps = [StepRecord(thought=s.thought, action=s.action, args=s.args if isinstance(s.args, dict) else {},
                             observation=s.observation, ok=s.ok) for s in run.steps]
         stop = "budget" if state.halted and run.answer is None else run.stop_reason
-        return _Outcome(answer=run.answer, success=bool(run.success), grounded=run.grounded, steps=steps,
-                        stop_reason=stop, error=run.error or (state.halted if run.answer is None else None), plan=plan)
+        outcome = _Outcome(answer=run.answer, success=bool(run.success), grounded=run.grounded, steps=steps,
+                           stop_reason=stop, error=run.error or (state.halted if run.answer is None else None),
+                           plan=plan)
+        if run.context is not None:
+            used = run.context
+            outcome.compactions = used.compactions + used.dropped
+            outcome.prompt_reuse = used.cache_hit_ratio if run.llm_calls > 1 else None
+            self.tracer.event("memory", "context", tokens=used.tokens, budget=used.budget,
+                              compactions=used.compactions, shrunk=used.shrunk, dropped=used.dropped,
+                              summarised_messages=used.summarised_messages, prompt_reuse=used.cache_hit_ratio)
+        return outcome
 
     @staticmethod
     def _why_failed(outcome: _Outcome) -> str:
@@ -380,6 +405,8 @@ class CognitiveEngine:
                     self.memory.procedural.record_use(route.policy_id, outcome.success)
             elif current == "react":
                 outcome = self._react(task, context, state, tools, check)
+                if not state.halted and outcome.stop_reason != "llm_error":   # judge the path, not an outage
+                    self.router.learn(task, react_failed=not outcome.success)
             else:
                 outcome = self._deliberate(task, context, state, tools, check)
             if outcome.success or state.halted or position == len(ladder) - 1:
@@ -413,6 +440,7 @@ class CognitiveEngine:
             success=outcome.success, grounded=outcome.grounded, stop_reason=outcome.stop_reason or "answer",
             steps=outcome.steps, tool_calls=state.tool_calls, tool_errors=state.tool_errors,
             llm_calls=state.llm_calls, plans_tried=outcome.plans_tried, escalated=escalated,
+            compactions=outcome.compactions, prompt_reuse=outcome.prompt_reuse,
             repairs=len(self.tools.repaired) + (self.healer.repairs if self.healer else 0) - repairs_before,
             error=None if outcome.success else (outcome.error or state.halted), flags=flags + state.flags)
         if self.config.learn and self.memory is not None and (route.reply is None or used != "reflex"):

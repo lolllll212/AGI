@@ -17,17 +17,17 @@ from .orchestrator import Actor, Message, MessageBus, OrchestrationResult, Orche
 from .react import Conversation, GroundingVerifier, ReActAgent, Run
 from .resilience import (BudgetExceeded, CircuitBreaker, CircuitOpen, LoopDetected, LoopDetector, RateLimiter,
                          StepBudget)
-from .router import Router, RouterConfig
+from .router import RouteLearner, Router, RouterConfig
 from .sandbox import Sandbox, SandboxPolicy, SandboxResult, check_source
-from .tracing import Tracer, load_jsonl
+from .tracing import OTLPExporter, Tracer, load_jsonl, otlp_payload
 from .types import (AgentConfig, EngineResult, GuardrailVerdict, Observation, Route, StepRecord, ToolCall,
                     TraceEvent)
 
 __all__ = ["LLM", "Actor", "AgentConfig", "BudgetExceeded", "CircuitBreaker", "CircuitOpen", "CognitiveEngine",
            "Conversation", "DockerSandbox", "EngineConfig", "EngineResult", "GroundingVerifier", "GuardrailVerdict",
            "Guardrails", "LLMError", "LoopDetected", "LoopDetector", "Message", "MessageBus", "Observation",
-           "OpenAICompatEmbedder", "OpenAICompatLLM", "OrchestrationResult", "Orchestrator", "RateLimiter",
-           "ReActAgent", "Route", "Router", "RouterConfig", "Rule", "Run", "Sandbox", "SandboxPolicy",
+           "OTLPExporter", "OpenAICompatEmbedder", "OpenAICompatLLM", "OrchestrationResult", "Orchestrator", "RateLimiter",
+           "ReActAgent", "Route", "RouteLearner", "Router", "RouterConfig", "Rule", "Run", "Sandbox", "SandboxPolicy",
            "SandboxResult", "SandboxUnavailable", "ScriptedLLM", "StepBudget", "StepRecord", "SubResult",
            "ToolCall", "TraceEvent", "Tracer", "WasmSandbox", "available_backends", "best_sandbox", "check_source",
-           "extract_code", "extract_json", "load_jsonl"]
+           "extract_code", "extract_json", "load_jsonl", "otlp_payload"]

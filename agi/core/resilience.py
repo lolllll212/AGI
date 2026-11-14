@@ -132,6 +132,21 @@ class RateLimiter:
             self._tokens -= 1.0
             return 0.0 if self._tokens >= 0 else -self._tokens / self.rate
 
+    def allow(self) -> bool:
+        """Take a token if one is available, without waiting and without running up a debt.
+
+        For servers that reject rather than queue: a refused request costs the caller nothing
+        further, so a burst of rejections does not lock them out afterwards.
+        """
+        with self._lock:
+            now = self.clock()
+            self._tokens = min(self.burst, self._tokens + (now - self._stamp) * self.rate)
+            self._stamp = now
+            if self._tokens < 1.0:
+                return False
+            self._tokens -= 1.0
+            return True
+
     def acquire(self) -> float:
         wait = self._take()
         if wait > 0:

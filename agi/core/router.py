@@ -15,8 +15,11 @@ cached policy has stopped being reliable).
 """
 from __future__ import annotations
 
+import json
+import os
 import re
-from typing import Callable
+import threading
+from typing import Callable, Sequence
 
 from ..tools.base import ToolRegistry
 from .types import Model, Route, ToolCall
@@ -57,16 +60,93 @@ class RouterConfig(Model):
     long_task_words: int = 60
     use_cached_policies: bool = True
     small_talk: bool = True
+    learn_routes: bool = True            # adjust react/deliberate choices from how runs actually went
+    min_observations: int = 8            # outcomes for a kind of task before experience may overrule the rules
+    plan_above: float = 0.65             # estimated chance that react fails, above which to plan first
+    relax_below: float = 0.15            # ... below which a task the rules call hard is tried with react
+    explore_every: int = 0               # try react on every Nth task that would be planned, to keep evidence fresh (0 = never)
+
+
+class RouteLearner:
+    """Learns, from outcomes, which kinds of task the reason-act loop fails on.
+
+    Tasks are grouped by profile: the router's signals plus a length band. For
+    each profile it keeps how often a plain reason-act loop was tried and how
+    often it failed. A profile's record affects only that profile - evidence
+    about "why" questions says nothing about plain summaries - which makes the
+    learner slow to generalise and hard to mislead.
+
+    It only ever moves a task between ``react`` and ``deliberate``; the engine
+    still escalates when a path fails, so a wrong estimate costs time, never an
+    answer.
+    """
+
+    def __init__(self, path: str | None = None):
+        self.path = path
+        self.profiles: dict[str, list[int]] = {}           # profile -> [runs, failures]
+        self.observations = 0
+        self._lock = threading.Lock()
+        if path and os.path.isfile(path):
+            try:
+                with open(path, encoding="utf-8") as handle:
+                    data = json.load(handle)
+                self.profiles = {str(k): [int(v[0]), int(v[1])] for k, v in data["profiles"].items()}
+                self.observations = int(data.get("observations", 0))
+            except (OSError, ValueError, TypeError, KeyError, IndexError, AttributeError):
+                self.profiles, self.observations = {}, 0   # a damaged file means starting over
+
+    @staticmethod
+    def features(signals: Sequence[str], words: int) -> list[str]:
+        size = "short" if words <= 12 else "medium" if words <= 40 else "long"
+        return sorted(set(s for s in signals if s not in ("long", "experience"))) + [f"length:{size}"]
+
+    @staticmethod
+    def profile(features: Sequence[str]) -> str:
+        return " + ".join(features)
+
+    def runs(self, features: Sequence[str]) -> int:
+        return self.profiles.get(self.profile(features), [0, 0])[0]
+
+    def risk(self, features: Sequence[str]) -> float:
+        """The estimated chance that a plain reason-act loop fails on this kind of task.
+
+        Laplace-smoothed: with no evidence it is 0.5, and it takes several
+        consistent outcomes to move it near either end.
+        """
+        runs, failures = self.profiles.get(self.profile(features), [0, 0])
+        return (failures + 1) / (runs + 2)
+
+    def update(self, features: Sequence[str], react_failed: bool) -> None:
+        with self._lock:
+            record = self.profiles.setdefault(self.profile(features), [0, 0])
+            record[0] += 1
+            record[1] += int(bool(react_failed))
+            self.observations += 1
+            if self.path:
+                try:
+                    temporary = self.path + ".tmp"
+                    with open(temporary, "w", encoding="utf-8") as handle:
+                        json.dump({"profiles": self.profiles, "observations": self.observations}, handle)
+                    os.replace(temporary, self.path)
+                except OSError:                             # learning is best-effort; routing still works
+                    pass
+
+    def explain(self) -> list[tuple[str, float, int]]:
+        """Profiles, riskiest first: (profile, estimated failure rate, runs)."""
+        rows = [(name, round((failures + 1) / (runs + 2), 3), runs) for name, (runs, failures) in self.profiles.items()]
+        return sorted(rows, key=lambda row: (-row[1], -row[2], row[0]))
 
 
 class Router:
     def __init__(self, tools: ToolRegistry, procedural=None, episodic=None, config: RouterConfig | None = None,
-                 evaluate: Callable[[str], object] | None = None):
+                 evaluate: Callable[[str], object] | None = None, learner: RouteLearner | None = None):
         """``procedural``/``episodic`` are the memory tiers consulted for cached policies and past failures."""
         self.tools, self.procedural, self.episodic = tools, procedural, episodic
         self.config = config or RouterConfig()
+        self.learner = learner if learner is not None else (RouteLearner() if self.config.learn_routes else None)
         self._evaluate = evaluate
         self.decisions: dict[str, int] = {"reflex": 0, "react": 0, "deliberate": 0}
+        self._explored = 0
 
     # -- System 1 patterns ------------------------------------------------- #
     def _small_talk(self, text: str) -> Route | None:
@@ -144,5 +224,42 @@ class Router:
                 route = Route(mode="react", signals=signals, confidence=0.6,
                               reason="no cached policy fits; a single reason-act loop should do"
                                      + (f" (signal: {signals[0]})" if signals else ""))
+            route = self._from_experience(text, route)
         self.decisions[route.mode] += 1
         return route
+
+    # -- experience -------------------------------------------------------- #
+    def task_features(self, task: str) -> list[str]:
+        text = " ".join(task.split())
+        return RouteLearner.features(self.signals(text), len(text.split()))
+
+    def _from_experience(self, text: str, route: Route) -> Route:
+        """Let measured outcomes overrule the fixed rules, once there are enough of them."""
+        learner, config = self.learner, self.config
+        if learner is None or not config.learn_routes or "failed_before" in route.signals:
+            return route                                    # (a specific memory beats a general statistic)
+        features = RouteLearner.features(route.signals, len(text.split()))
+        runs = learner.runs(features)
+        if runs >= config.min_observations:
+            risk = learner.risk(features)
+            if route.mode == "react" and risk >= config.plan_above:
+                route = Route(mode="deliberate", signals=route.signals + ["experience"], confidence=risk,
+                              reason=f"experience: the reason-act loop failed on most earlier tasks like this "
+                                     f"(estimated failure {risk:.0%} over {runs} runs)")
+            elif route.mode == "deliberate" and risk <= config.relax_below:
+                return Route(mode="react", signals=route.signals + ["experience"], confidence=1.0 - risk,
+                             reason=f"experience: tasks like this have been solved without planning "
+                                    f"(estimated failure {risk:.0%} over {runs} runs)")
+        if route.mode == "deliberate" and config.explore_every:
+            # Planning first means the cheap path is never tried, so its record would never change.
+            self._explored += 1
+            if self._explored % config.explore_every == 0:
+                return Route(mode="react", signals=route.signals + ["exploring"], confidence=0.5,
+                             reason="exploring: trying the cheaper path on a task that is normally planned "
+                                    "(it escalates if that fails)")
+        return route
+
+    def learn(self, task: str, react_failed: bool) -> None:
+        """Record how the reason-act loop did on ``task``."""
+        if self.learner is not None and self.config.learn_routes:
+            self.learner.update(self.task_features(task), react_failed)

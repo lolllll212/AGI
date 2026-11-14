@@ -2,6 +2,7 @@
 import os
 import stat
 import sys
+import time
 
 import pytest
 
@@ -115,6 +116,27 @@ def test_wasm_enforces_time_and_memory_limits():
     hog = tight.run("x = bytearray(600 * 1024 * 1024)")
     assert not hog.ok and hog.error_type in ("MemoryError", "ResourceLimit")
     assert tight.run("result = 1").ok                                 # the sandbox is reusable afterwards
+
+
+@needs_wasm
+def test_wasm_fuel_stops_a_runaway_loop_long_before_the_clock_does():
+    box = WasmSandbox(SandboxPolicy(wall_time_s=30, memory_mb=256), fuel=2_000_000_000)
+    assert "fuel" in box.isolation
+    box.warm_up()                                  # compiles the metered build once per machine (about a minute)
+    assert box.warm_up() < 5                       # ... and is nearly free afterwards
+    started = time.perf_counter()
+    spin = box.run("while True:\n    pass")
+    assert spin.timed_out and spin.error_type == "Timeout" and box.trapped == "out of fuel"
+    assert time.perf_counter() - started < 10      # the wall-clock limit is 30 s: fuel cut it off first
+    fine = box.run("result = sum(i * i for i in range(20000))")
+    assert fine.ok and fine.value == 2666466670000 and box.trapped is None
+
+
+def test_wasm_refuses_fuel_too_small_to_start_the_interpreter():
+    with pytest.raises(ValueError, match="starting the interpreter uses about 36,000,000"):
+        WasmSandbox(fuel=1_000_000, check=False)
+    assert WasmSandbox(fuel=WasmSandbox.MIN_FUEL, check=False).fuel == 100_000_000
+    assert "fuel" not in WasmSandbox(check=False).isolation
 
 
 @needs_wasm

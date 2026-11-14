@@ -1,26 +1,38 @@
 # AGI
 
-Building blocks for agents that are more capable and easier to trust, in one
-Python package with light dependencies.
+Building blocks for agents that are more capable and easier to trust: one
+Python package with light dependencies, a JSON API with a web console, and the
+files to run and monitor it.
 
 | Part | What it does | Module |
 | --- | --- | --- |
-| Engine | Routes each task to the cheapest path that can answer it: a reflex, a reason-act loop, or deliberate plan search; escalates when a path fails, and learns from that which kinds of task to plan first | `agi.core` |
-| Memory | A working context kept under a token budget inside every run, episodic records searched by meaning, a knowledge graph with time, and reusable procedures | `agi.memory` |
-| Reasoning | Plan search (MCTS, Tree of Thoughts), Graph of Thoughts, all scored by executing and checking | `agi.reasoning` |
-| Tools | Typed tools, tool routing, tools written at runtime, failing code repaired and re-run | `agi.tools` |
-| Sandboxes | Untrusted code runs in a locked-down process, in WebAssembly, or in a container | `agi.core.sandbox`, `agi.core.isolation` |
-| Safety and operations | Guardrails on input, tool output and answers; tracing; circuit breaker, rate limiter, step budget, loop detector | `agi.core` |
-| Evaluation | A 24-task benchmark, stored baselines, regression and drift detection, A/B-tested prompt and settings changes | `agi.evaluation` |
-| API | An async service object and a JSON HTTP(S) server with per-caller keys and conversations kept on disk | `agi.api` |
+| Engine | Routes each task to the cheapest path that can answer it: a reflex, a reason-act loop, or deliberate plan search; escalates when a path fails, and learns from that which kinds of task to plan first | `agi.application.cortex` |
+| Memory | A working context kept under a token budget inside every run, episodic records searched by meaning, a knowledge graph with time, and reusable procedures | `agi.application.memory`, `agi.infrastructure.adapters.persistence` |
+| Reasoning | Plan search (MCTS, Tree of Thoughts), Graph of Thoughts, all scored by executing and checking | `agi.application.reasoning` |
+| Tools | Typed tools, tool routing, tools written at runtime, failing code repaired and re-run; extra tools loaded from a plugins folder | `agi.application.tools`, `agi.infrastructure.adapters.{execution,plugins}` |
+| Sandboxes | Untrusted code runs in a locked-down process, in WebAssembly, or in a container | `agi.infrastructure.adapters.sandbox` |
+| Safety and operations | Guardrails on input, tool output and answers; tracing, Prometheus metrics, a JSON access log; circuit breaker, rate limiter, step budget, loop detector | `agi.application.cortex`, `agi.infrastructure.adapters.observability` |
+| Evaluation | A 24-task benchmark, stored baselines, regression and drift detection, A/B-tested prompt and settings changes | `agi.eval` |
+| API and console | An async service object, a JSON HTTP(S) server with per-caller keys and conversations kept on disk, and a web console served by that same server | `agi.application.interfaces`, `agi.infrastructure.api`, `web/` |
 | Training | A search policy trained by gradient descent; fine-tuning data exported from agent runs | `agi.training` |
-| World models | Learns from the consequences of actions; causal discovery by intervention | `agi.world` |
-| Self-improvement | Agents write tools for each other under consensus, a sandbox and fixed safety rules | `agi.collective` |
+| World models | Learns from the consequences of actions; causal discovery by intervention | `agi.application.world` |
+| Self-improvement | Agents write tools for each other under consensus, a sandbox and fixed safety rules | `agi.application.swarm` |
 
 This is not an AGI and it does not contain a language model. It is the machinery
 around one. Everything runs offline with deterministic stand-ins; a real model
-plugs in through one seam (`agi.core.llm`). Read [Known limits](#known-limits)
+plugs in through one seam (the `LLM` port in `agi.domain.ports`, with the
+clients in `agi.infrastructure.adapters.llm`). Read [Known limits](#known-limits)
 before relying on any part of it.
+
+**New in 0.5:** the package is arranged in layers (`domain`, `application`,
+`infrastructure`, plus `eval` and `training`) under `src/agi/`, with a test that
+fails if an inner layer imports an outer one. Import paths from before 0.5 still
+work and warn ([docs/migration-0.5.md](docs/migration-0.5.md)). The server gained
+a [web console](#the-web-console), `/metrics`, a JSON access log, a settings
+file, tools from a plugins folder and an offline demonstration mode; and the
+repository now holds a `Dockerfile`, a Compose file and monitoring configuration
+([Running it as a service](#running-it-as-a-service)), which have **not** been
+run here.
 
 **New in 0.4:** the reason-act loop keeps its context under a token budget
 ([The engine](#the-engine)); the router learns from outcomes; tool matching
@@ -39,7 +51,8 @@ and `pydantic` 2.
 pip install -e ".[test]"
 python -m agi                 # all eight demos, about a minute, no model needed
 python -m agi engine          # or pick: memory reasoning world collective agent react training engine
-pytest                        # 593 tests, about two minutes (one needs Docker and is skipped without it)
+pytest                        # 662 tests, about two minutes (one needs Docker and is skipped without it)
+python -m agi serve --demo    # the API and the web console on http://127.0.0.1:8000, no model needed
 ```
 
 Optional extras, each with a built-in fallback when absent:
@@ -60,7 +73,8 @@ python -m agi chat --model llama3.1 --base-url http://localhost:11434/v1 --works
 python -m agi eval --model gpt-4o-mini       # score the model on the eight core benchmark tasks
 python -m agi eval --model gpt-4o-mini --extended    # ... or on all 24
 python -m agi train --out policy.json        # train the search policy
-python -m agi serve --model gpt-4o-mini --workspace ./data --state ./state   # JSON API on 127.0.0.1:8000
+python -m agi serve --model gpt-4o-mini --workspace ./data --state ./state   # API and console on 127.0.0.1:8000
+python -m agi serve --config config/agi.toml # ... or keep the settings in a file
 ```
 
 ## The engine
@@ -304,7 +318,7 @@ print(healed.summary())   # self-healed after 1 repair(s): missing_import (NameE
 - **Tool routing.** With many tools, `EngineConfig(tool_k=5)` shows the model
   only the five most relevant; with the toolsmith tools registered it can call
   `find_tools` to look for more. Matching uses shared words, a small table of
-  related words (`agi.memory.embed.CONCEPTS`: "days until" and "current date"
+  related words (`agi.domain.services.embedding.CONCEPTS`: "days until" and "current date"
   both mean *time*) and a line of typical requests per built-in tool. On 18
   requests phrased the way a user would, the right tool came first for 14 and
   in the top three for 17; with shared words alone it was 6 and 9. Add your own
@@ -583,7 +597,11 @@ service.close()
 | `POST /v1/solve` | Split a task, run the parts in parallel, combine |
 | `GET /v1/traces/{id}` | Every recorded step of one run |
 | `GET /v1/tools`, `GET /v1/stats` | What the agent has; counters, memory sizes, drift |
+| `GET /v1/info` | Version, the model's name, who the token belongs to, example tasks |
+| `GET /v1/runs` | The caller's latest 100 runs, newest first (kept in memory; secrets in the task text are masked) |
+| `GET /metrics` | Prometheus metrics, behind the same token |
 | `DELETE /v1/sessions/{id}` | Forget a conversation |
+| `GET /`, `/assets/...` | The web console's files. No token: they hold no secrets, and the console asks for the token itself |
 
 The server listens on 127.0.0.1 and refuses any other address without a bearer
 token or keys.
@@ -596,7 +614,8 @@ token or keys.
 | Overload | Connections beyond `max_connections` (64) get `503` with `Retry-After` at once instead of queueing. Bodies over 1 MB get `413`. |
 | Restarts | With `memory_dir`, conversations are stored in `sessions.db` there and continue after a restart; idle ones expire after 30 days. `stop()` lets requests in progress finish. |
 | Long conversations | Each conversation is kept under `session_tokens` (2,000) by summarising older turns, not by cutting them. |
-| Tracking a request | Every response carries `X-Request-Id` (yours, if you sent a sane one); the body of a run carries its `trace_id`. |
+| Tracking a request | Every response carries `X-Request-Id` (yours, if you sent a sane one); the body of a run carries its `trace_id`. With `access_log=`, each request is written as one JSON line with that id, the route, the status and the time taken, and never the token or the task. |
+| Metrics | `/metrics` reports runs by mode and outcome, time per run, model and tool calls, repairs, escalations, HTTP responses by route and status, refused connections and more. The route label is the route's pattern, never the raw path, so callers cannot create unlimited series. |
 
 ```python
 import json, tempfile, urllib.request
@@ -626,6 +645,58 @@ for restart in range(2):                       # the second pass is a fresh serv
 
 From the command line: `python -m agi serve --model M --state ./state --keys-file keys.json
 --tls-cert cert.pem --tls-key key.pem --rate-limit 5 --otlp-endpoint http://localhost:4318/v1/traces`.
+
+### The web console
+
+`python -m agi serve` also serves a console at `/`: a chat that shows, for each
+answer, which path produced it, how long it took, every step and tool result,
+and a link to its trace; a list of recent runs with their traces; the tools; and
+a status page. It is a React application in `web/`, built into
+`src/agi/infrastructure/api/static/` and committed there, so the Python server
+needs no Node at run time.
+
+| Concern | What happens |
+| --- | --- |
+| The token | Asked for once, checked against the server, kept in the tab's `sessionStorage` and forgotten when the tab closes. It is sent only as a header to the same origin. |
+| Scripts | The pages are served with a Content-Security-Policy that allows scripts and connections from the same origin only, and nothing inline. Model output is rendered as text, never as HTML. |
+| Framing | Other sites cannot put the console in a frame unless the server is started with `--allow-framing`. |
+| Switching it off | `--no-ui` (and `--no-metrics` for `/metrics`). |
+
+```bash
+cd web
+npm install
+npm run dev        # the console on :5173 with live reload, talking to a server on :8000
+npm test           # five tests of the sign-in and chat flows against a stand-in server
+npm run build      # type-check and rebuild src/agi/infrastructure/api/static/
+```
+
+### Tools from a plugins folder
+
+`--plugins DIR` loads extra tools at start-up. A plugin is a folder with a
+`plugin.py`, or a single `.py` file, that defines `tools()` returning `Tool`
+objects; [`plugins/`](plugins) has two examples. Plugin code runs inside the
+server with the server's permissions (it is not sandboxed), so load only code
+you would import yourself. A plugin that fails to load stops the server with
+its name in the message.
+
+### Running it as a service
+
+| File | What it is for |
+| --- | --- |
+| `config/agi.toml`, `config/docker.toml` | Settings files for `serve --config`. Every key matches a command-line flag; a flag wins. Secrets are not kept here. |
+| `Dockerfile` | Builds the console with Node, then a Python image that runs the server as an unprivileged user. |
+| `docker-compose.yml` | The API behind nginx (TLS, only ports 80 and 443 published), with Prometheus, Alertmanager, Grafana, Loki and Promtail. |
+| `monitoring/` | The configuration of each of those: scrape job, ten alert rules, a 20-panel dashboard, log shipping. |
+| `secrets/`, `.env.example` | Where the API token, keys and passwords go. Git ignores everything there except the instructions. |
+| `scripts/smoke.py` | Checks a running server from outside: health, sign-in, one task, its trace, metrics, the console. |
+| `scripts/check.sh` | The layer rules, the Python tests, and the console's type check, tests and build. |
+
+**None of the container files have been run.** No Docker was available here.
+What is tested: every YAML and TOML file parses; every metric named in an alert
+or a dashboard panel is one the server exports; the Compose file mounts only
+files that exist and publishes only the proxy; and the smoke script passes
+against a live local server. Whether the images build and the services start
+is unverified: see [docs/deployment.md](docs/deployment.md) before relying on it.
 
 ## Tools and the ReAct loop
 
@@ -741,7 +812,7 @@ language model itself.
 
 ## The benchmark suite
 
-`agi.evaluation` (also importable as `agi.evals`) holds 24 tasks over sample
+`agi.eval` holds 24 tasks over sample
 files. Each is checked against a value computed independently in plain Python,
 and each carries a reference solution proving it can be done with the standard
 tools.
@@ -868,7 +939,7 @@ for trial in agent.practice(target=30.0, trials=6):
 # predicted  30.0 m, landed  29.7 m, missed by 0.34 m
 ```
 
-`agi.world` also has `CodeWorld` (the sandbox as an environment), `FunctionWorld`
+`agi.application.world` also has `CodeWorld` (the sandbox as an environment), `FunctionWorld`
 (any callables or API clients behind an allowlist and call budget), and
 `CausalLearner`, which intervenes on variables to tell causes from correlations.
 
@@ -907,12 +978,12 @@ Shared state lives in `conflux-state` CRDT replicas, one per agent. Every write
 is a signed action restricted to the writer's namespace, so replicas converge in
 any delivery order and an agent cannot write the registry, forge another agent's
 review, or edit a message after signing it. The full list of rules is
-`agi.collective.HARD_BOUNDARIES`. Approved tools can be handed to the ReAct loop
+`agi.application.swarm.HARD_BOUNDARIES`. Approved tools can be handed to the ReAct loop
 with `standard_tools(forge=group.forge)`.
 
 ## The process sandbox, and what it does not do
 
-`agi.core.sandbox.Sandbox` (also `agi.sandbox.Sandbox`) runs untrusted code in layers: a static AST gate, a fresh
+`agi.infrastructure.adapters.sandbox.process.Sandbox` runs untrusted code in layers: a static AST gate, a fresh
 interpreter process with an empty environment, kernel limits on CPU, memory,
 file size and process count, a network namespace where the host allows it, and a
 runtime audit hook. `Sandbox().isolation` reports which layers are active.
@@ -978,8 +1049,31 @@ wrap the interpreter yourself through `SandboxPolicy(launcher=[...])`.
 - **Trace export is tested against a stub, not a real collector.** The
   exporter posts OTLP/HTTP JSON and the tests check the payload field by field
   against a local stand-in. No OpenTelemetry Collector was available, and
-  there is no gRPC or protobuf transport, no metrics and no logs. Spans are
-  dropped, not buffered to disk, while a collector is unreachable.
+  there is no gRPC or protobuf transport. Metrics and logs do not go through
+  OTLP: metrics are a Prometheus page and the access log is JSON lines. Spans
+  are dropped, not buffered to disk, while a collector is unreachable.
+- **The container and monitoring files have never been run.** The `Dockerfile`,
+  the Compose file and the nginx, Prometheus, Alertmanager, Grafana, Loki and
+  Promtail configurations were written without Docker or any of those programs
+  available. The tests check that they parse and agree with each other and with
+  the server's metrics, which catches a renamed metric but not a wrong option
+  or an image that fails to build. The image versions are pinned to ones known
+  at the time of writing and will have newer releases. Alerts are collected but
+  sent nowhere until you add a receiver.
+- **The console has been tested in a simulated browser only.** Its five tests
+  drive the sign-in and chat flows in jsdom against a stand-in server, and the
+  built files were fetched from a live server; no real browser was available,
+  so layout, dark mode and keyboard use have not been looked at. It has no
+  streaming (an answer appears when the run ends), and the list of recent runs
+  is lost when the server restarts.
+- **Metrics are per process and reset on restart**, as Prometheus expects of
+  counters. With several server processes each must be scraped separately.
+- **Plugins are trusted code.** They are imported into the server process and
+  can do anything it can.
+- **The layers are checked by import, not by behaviour.** The test reads import
+  statements; application code reaches adapters through a registry
+  (`agi.domain.ports.make`), which the check cannot follow. `agi.domain` still
+  depends on `pydantic`.
 - **Drift statistics are simple.** A z-test of a recent window against a
   reference window. Results from one conversation are not independent, which
   the test assumes, so treat an alarm as a prompt to look, not as proof.
@@ -989,7 +1083,7 @@ wrap the interpreter yourself through `SandboxPolicy(launcher=[...])`.
   reference solutions prove each task is solvable, not that it is fair to
   every model.
 - **The HTTP server is still a standard-library server.** It has per-caller
-  keys, TLS, rate limits, a connection cap and stored conversations, and it
+  keys, TLS, rate limits, a connection cap, metrics and stored conversations, and it
   uses one thread per connection, fixes its keys at start-up (no rotation,
   no expiry, no roles: every key can use every endpoint and every tool), and
   has had no security review. The TLS tests use a self-signed certificate.
@@ -1022,29 +1116,48 @@ wrap the interpreter yourself through `SandboxPolicy(launcher=[...])`.
 ## Layout
 
 ```
-agi/
-  core/
-    engine.py       CognitiveEngine: reflex, react, deliberate, escalation
-    router.py       which path a task takes, and the record of how each choice turned out
-    react.py        the reason-act loop, answer verifiers, Conversation
-    orchestrator.py message bus, actors, parallel sub-tasks
-    sandbox.py      process sandbox        isolation.py  WebAssembly and Docker backends
-    guardrails.py   input, observation and output filters
-    resilience.py   circuit breaker, rate limiter, step budget, loop detector
-    tracing.py      spans, JSONL, OTLP export to a collector
-    types.py        validated data shared between components
-    llm.py          model and embedding clients (the only model-facing module)
-    agent.py        LearningAgent: memory, verified search, trained policy
-  memory/           working, episodic (vector), semantic (graph), procedural, lessons
-  reasoning/        plan search, MCTS, Tree and Graph of Thoughts, logic verifier, problems
-  tools/            registry, built-in tools, routing, tool creation, self-healing
-  evaluation/       benchmark (suite.py: 8 core tasks, extended.py: 16 more), evaluator and drift
-                    monitor, optimiser, data export
-  api/              AgentService (async, stored sessions) and AgentServer (HTTP/HTTPS, per-caller keys)
-  training/         search policy training, fine-tuning data export
-  world/            environments, world model, causal discovery
-  collective/       ledger, safety policy, tool forge, agents
-  __main__.py       demos and the run/chat/eval/train/serve commands
-  llm.py sandbox.py react.py agent.py evals.py    the pre-0.3 import paths, kept working
-tests/              one file per area
+src/agi/
+  domain/             no imports from the other layers
+    entities/         Tool and ToolRegistry, memory records, search problems
+    value_objects/    validated data shared between components; sandbox policy and result
+    ports/            what the application needs from outside (LLM, Sandbox) and the adapter registry
+    services/         pure functions: text extraction, arithmetic, the static source check, the offline embedder
+    exceptions.py
+  application/        imports domain only
+    cortex/           CognitiveEngine (reflex, react, deliberate, escalation), router, the reason-act loop,
+                      guardrails, circuit breaker and limits, LearningAgent
+    memory/           working context, the memory hierarchy, lessons from experience
+    reasoning/        plan search, MCTS, Tree and Graph of Thoughts, logic verifier
+    tools/            tool routing, tool creation, self-healing
+    swarm/            message bus, actors and parallel sub-tasks; ledger, safety policy, tool forge, agents
+    world/            environments, world model, causal discovery
+    interfaces/       AgentService: the async entry point the API and the CLI use
+  eval/               the benchmark (8 core tasks and 16 more), evaluator and drift monitor, optimiser
+  training/           search policy training, fine-tuning data export
+  infrastructure/     may import every other layer
+    adapters/
+      llm/ embedding/         OpenAI-compatible clients, the scripted stand-in
+      sandbox/                process, WebAssembly and Docker backends
+      persistence/            episodic (vector), knowledge graph, semantic, procedural, sessions
+      execution/              the built-in tools
+      observability/          tracing, OTLP export, Prometheus metrics, JSON log
+      security/               API keys, TLS context
+      plugins/                tools loaded from a folder
+    api/              AgentServer; routes/ (one module per area), schemas, telemetry, static/ (the built console)
+    cli/              demos and the run/chat/eval/train/serve commands
+    di/               build_engine, and the default adapter for each port
+    config.py         the settings file
+  _legacy.py          keeps import paths from before 0.5 working, with a warning
+web/                  the console's source: React, TypeScript, Vite (src/pages, components, hooks, services, utils)
+plugins/              two example plugins
+config/               settings files for serve --config
+monitoring/           prometheus, alertmanager, grafana, loki, promtail, nginx (not run here)
+scripts/              smoke.py, check.sh, build_dashboard.py
+docs/                 architecture, migration from 0.4, deployment
+secrets/              where tokens and keys go; ignored by Git
+tests/
+  unit/ integration/ eval/    by kind
+  architecture/               the layer rules, and the old import paths
+  fakes/                      scripted models and helpers shared by tests
+Dockerfile, docker-compose.yml, .env.example
 ```

@@ -33,6 +33,16 @@ from ..memory.working import WorkingMemory
 from ..tools import SelfHealer, ToolRegistry, healing_python_tool, standard_tools, toolsmith_tools
 
 
+def _dense(embed: Any) -> Callable[[str], list[float]]:
+    """Adapt an embedder (a function or an object with ``embed``) to the plain list episodic memory wants."""
+    function = getattr(embed, "embed", embed)
+
+    def dense(text: str) -> list[float]:
+        vector = function(text)
+        return [value for _, value in sorted(vector.items())] if isinstance(vector, dict) else list(vector)
+    return dense
+
+
 def build_engine(llm: Callable[[str], str] | None = None, workspace: str | Path | None = None,
                  memory_dir: str | None = None, memory: Any = "auto", sandbox: Sandbox | str = "process",
                  heal: bool = True, toolsmith: bool = False, network: bool = False,
@@ -65,14 +75,7 @@ def build_engine(llm: Callable[[str], str] | None = None, workspace: str | Path 
     if otlp_endpoint:
         tracer.add_exporter(OTLPExporter(otlp_endpoint, otlp_headers, service=tracer.service))
     if memory == "auto":
-        dense = None
-        if embed is not None:
-            function = getattr(embed, "embed", embed)
-
-            def dense(text: str) -> list[float]:           # episodic memory wants a plain list of floats
-                vector = function(text)
-                return [value for _, value in sorted(vector.items())] if isinstance(vector, dict) else list(vector)
-        memory = HierarchicalMemory(memory_dir, sandbox=sandbox, embed=dense)
+        memory = HierarchicalMemory(memory_dir, sandbox=sandbox, embed=_dense(embed) if embed is not None else None)
     tools: ToolRegistry = standard_tools(workspace=workspace, sandbox=sandbox, network=network,
                                          allow_hosts=allow_hosts, read_only=read_only,
                                          memory=getattr(memory, "lessons", None))

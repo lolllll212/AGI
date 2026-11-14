@@ -188,9 +188,30 @@ def test_experience_overrules_the_rules_in_both_directions():
     assert off.learner is None and off.route(why).mode == "react"
 
 
-def test_exploration_keeps_the_record_of_planned_tasks_fresh():
+def test_a_record_made_in_worse_times_can_recover():
+    router = Router(ToolRegistry(), config=RouterConfig(min_observations=4, recheck_every=3))
+    why = "Explain why the nightly export was late"
+    for _ in range(4):
+        router.learn(why, react_failed=True)                            # planning first from now on ...
+    routes = [router.route(why) for _ in range(6)]
+    assert [r.mode for r in routes] == ["deliberate", "deliberate", "react", "deliberate", "deliberate", "react"]
+    assert "rechecking" in routes[2].signals and routes[2].reason.startswith("rechecking: tasks like this")
+    for _ in range(4):
+        router.learn(why, react_failed=False)                           # ... the rechecks keep succeeding ...
+    assert router.learner.risk(router.task_features(why)) == 0.5        # 4 failures in 8: below the bar again
+    assert {router.route(why).mode for _ in range(6)} == {"react"}      # ... so react is the default once more
+    assert Router(ToolRegistry()).config.recheck_every == 10            # on by default, one task in ten
+    never = Router(ToolRegistry(), config=RouterConfig(min_observations=4, recheck_every=0))
+    for _ in range(4):
+        never.learn(why, react_failed=True)
+    assert {never.route(why).mode for _ in range(12)} == {"deliberate"}
+
+
+def test_exploration_of_tasks_the_rules_call_hard_is_opt_in():
+    hard = "Explain why we should compare these two vendors"            # two weak signals: the rules say plan
+    quiet = Router(ToolRegistry())
+    assert {quiet.route(hard).mode for _ in range(30)} == {"deliberate"} and quiet.config.explore_every == 0
     router = Router(ToolRegistry(), config=RouterConfig(min_observations=4, explore_every=3))
-    hard = "Explain why we should compare these two vendors"           # two weak signals: the rules say plan
     routes = [router.route(hard) for _ in range(6)]
     assert [r.mode for r in routes] == ["deliberate", "deliberate", "react", "deliberate", "deliberate", "react"]
     assert "exploring" in routes[2].signals and routes[2].reason.startswith("exploring: trying the cheaper path")
@@ -198,14 +219,6 @@ def test_exploration_keeps_the_record_of_planned_tasks_fresh():
         router.learn(hard, react_failed=False)                          # the explorations all succeeded ...
     settled = router.route(hard)
     assert settled.mode == "react" and "experience" in settled.signals  # ... so planning is no longer the default
-
-    # Tasks moved to planning by experience are re-tried too; otherwise that record could never recover.
-    why = "Explain why the nightly export was late"
-    for _ in range(4):
-        router.learn(why, react_failed=True)
-    modes = [router.route(why).mode for _ in range(6)]
-    assert modes.count("deliberate") == 4 and modes.count("react") == 2
-    assert Router(ToolRegistry()).config.explore_every == 0             # off unless asked for
 
 
 def test_the_engine_learns_to_plan_first_and_remembers_across_restarts(tmp_path):

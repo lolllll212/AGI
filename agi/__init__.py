@@ -24,7 +24,7 @@ from .core.react import Conversation, GroundingVerifier, ReActAgent, Run
 from .core.sandbox import Sandbox, SandboxPolicy, SandboxResult, check_source
 from .tools import Tool, ToolRegistry, standard_tools
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = ["CognitiveEngine", "EngineConfig", "EngineResult", "Guardrails", "Tracer", "LearningAgent", "Task", "Attempt", "Sandbox", "SandboxPolicy", "SandboxResult",
            "check_source", "LLM", "LLMError", "OpenAICompatLLM", "OpenAICompatEmbedder",

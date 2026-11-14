@@ -64,7 +64,9 @@ class RouterConfig(Model):
     min_observations: int = 8            # outcomes for a kind of task before experience may overrule the rules
     plan_above: float = 0.65             # estimated chance that react fails, above which to plan first
     relax_below: float = 0.15            # ... below which a task the rules call hard is tried with react
-    explore_every: int = 0               # try react on every Nth task that would be planned, to keep evidence fresh (0 = never)
+    recheck_every: int = 10              # of tasks experience moved to planning, try every Nth on react again,
+                                         # so a record made when things were worse can recover (0 = never)
+    explore_every: int = 0               # also try react on every Nth task the *rules* call hard (0 = never)
 
 
 class RouteLearner:
@@ -98,7 +100,7 @@ class RouteLearner:
     @staticmethod
     def features(signals: Sequence[str], words: int) -> list[str]:
         size = "short" if words <= 12 else "medium" if words <= 40 else "long"
-        return sorted(set(s for s in signals if s not in ("long", "experience"))) + [f"length:{size}"]
+        return sorted(set(s for s in signals if s not in ("long", "experience", "rechecking", "exploring"))) + [f"length:{size}"]
 
     @staticmethod
     def profile(features: Sequence[str]) -> str:
@@ -146,7 +148,7 @@ class Router:
         self.learner = learner if learner is not None else (RouteLearner() if self.config.learn_routes else None)
         self._evaluate = evaluate
         self.decisions: dict[str, int] = {"reflex": 0, "react": 0, "deliberate": 0}
-        self._explored = 0
+        self._explored = self._rechecked = 0
 
     # -- System 1 patterns ------------------------------------------------- #
     def _small_talk(self, text: str) -> Route | None:
@@ -243,19 +245,25 @@ class Router:
         if runs >= config.min_observations:
             risk = learner.risk(features)
             if route.mode == "react" and risk >= config.plan_above:
-                route = Route(mode="deliberate", signals=route.signals + ["experience"], confidence=risk,
-                              reason=f"experience: the reason-act loop failed on most earlier tasks like this "
-                                     f"(estimated failure {risk:.0%} over {runs} runs)")
-            elif route.mode == "deliberate" and risk <= config.relax_below:
+                # Planning first means the cheap path is no longer tried, so its record would never
+                # change. Every so often, try it again; the engine escalates if it still fails.
+                self._rechecked += 1
+                if config.recheck_every and self._rechecked % config.recheck_every == 0:
+                    return Route(mode="react", signals=route.signals + ["rechecking"], confidence=1.0 - risk,
+                                 reason=f"rechecking: tasks like this are usually planned first (estimated "
+                                        f"failure {risk:.0%} over {runs} runs); trying the cheaper path again")
+                return Route(mode="deliberate", signals=route.signals + ["experience"], confidence=risk,
+                             reason=f"experience: the reason-act loop failed on most earlier tasks like this "
+                                    f"(estimated failure {risk:.0%} over {runs} runs)")
+            if route.mode == "deliberate" and risk <= config.relax_below:
                 return Route(mode="react", signals=route.signals + ["experience"], confidence=1.0 - risk,
                              reason=f"experience: tasks like this have been solved without planning "
                                     f"(estimated failure {risk:.0%} over {runs} runs)")
         if route.mode == "deliberate" and config.explore_every:
-            # Planning first means the cheap path is never tried, so its record would never change.
             self._explored += 1
             if self._explored % config.explore_every == 0:
                 return Route(mode="react", signals=route.signals + ["exploring"], confidence=0.5,
-                             reason="exploring: trying the cheaper path on a task that is normally planned "
+                             reason="exploring: trying the cheaper path on a task the rules call hard "
                                     "(it escalates if that fails)")
         return route
 

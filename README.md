@@ -5,14 +5,14 @@ Python package with light dependencies.
 
 | Part | What it does | Module |
 | --- | --- | --- |
-| Engine | Routes each task to the cheapest path that can answer it: a reflex, a reason-act loop, or deliberate plan search; escalates when a path fails | `agi.core` |
-| Memory | Working context with compaction, episodic records searched by meaning, a knowledge graph with time, and reusable procedures | `agi.memory` |
+| Engine | Routes each task to the cheapest path that can answer it: a reflex, a reason-act loop, or deliberate plan search; escalates when a path fails, and learns from that which kinds of task to plan first | `agi.core` |
+| Memory | A working context kept under a token budget inside every run, episodic records searched by meaning, a knowledge graph with time, and reusable procedures | `agi.memory` |
 | Reasoning | Plan search (MCTS, Tree of Thoughts), Graph of Thoughts, all scored by executing and checking | `agi.reasoning` |
 | Tools | Typed tools, tool routing, tools written at runtime, failing code repaired and re-run | `agi.tools` |
 | Sandboxes | Untrusted code runs in a locked-down process, in WebAssembly, or in a container | `agi.core.sandbox`, `agi.core.isolation` |
 | Safety and operations | Guardrails on input, tool output and answers; tracing; circuit breaker, rate limiter, step budget, loop detector | `agi.core` |
-| Evaluation | Benchmark suite, stored baselines, regression and drift detection, A/B-tested prompt and settings changes | `agi.evaluation` |
-| API | An async service object and a small JSON HTTP server | `agi.api` |
+| Evaluation | A 24-task benchmark, stored baselines, regression and drift detection, A/B-tested prompt and settings changes | `agi.evaluation` |
+| API | An async service object and a JSON HTTP(S) server with per-caller keys and conversations kept on disk | `agi.api` |
 | Training | A search policy trained by gradient descent; fine-tuning data exported from agent runs | `agi.training` |
 | World models | Learns from the consequences of actions; causal discovery by intervention | `agi.world` |
 | Self-improvement | Agents write tools for each other under consensus, a sandbox and fixed safety rules | `agi.collective` |
@@ -21,6 +21,13 @@ This is not an AGI and it does not contain a language model. It is the machinery
 around one. Everything runs offline with deterministic stand-ins; a real model
 plugs in through one seam (`agi.core.llm`). Read [Known limits](#known-limits)
 before relying on any part of it.
+
+**New in 0.4:** the reason-act loop keeps its context under a token budget
+([The engine](#the-engine)); the router learns from outcomes; tool matching
+understands related words; traces are sent to an OpenTelemetry collector; the
+benchmark grew from 8 to 24 tasks; the HTTP server has per-caller keys, TLS,
+a connection cap and conversations that survive a restart; and the WebAssembly
+fuel limit is measured and usable.
 
 ## Quick start
 
@@ -32,7 +39,7 @@ and `pydantic` 2.
 pip install -e ".[test]"
 python -m agi                 # all eight demos, about a minute, no model needed
 python -m agi engine          # or pick: memory reasoning world collective agent react training engine
-pytest                        # 545 tests, about two minutes (one needs Docker and is skipped without it)
+pytest                        # 592 tests, about two minutes (one needs Docker and is skipped without it)
 ```
 
 Optional extras, each with a built-in fallback when absent:
@@ -50,7 +57,8 @@ Studio, OpenRouter and others). The API key is read from the environment:
 export OPENAI_API_KEY=...
 python -m agi run "Which region sold the most in sales.csv?" --model gpt-4o-mini --workspace ./data
 python -m agi chat --model llama3.1 --base-url http://localhost:11434/v1 --workspace ./data --memory agent.db
-python -m agi eval --model gpt-4o-mini       # score the model on the eight benchmark tasks
+python -m agi eval --model gpt-4o-mini       # score the model on the eight core benchmark tasks
+python -m agi eval --model gpt-4o-mini --extended    # ... or on all 24
 python -m agi train --out policy.json        # train the search policy
 python -m agi serve --model gpt-4o-mini --workspace ./data --state ./state   # JSON API on 127.0.0.1:8000
 ```
@@ -118,6 +126,95 @@ What the engine guarantees on every path:
   circuit opens and calls fail at once until it has had time to recover.
 - **Everything is recorded.** Each run has a `trace_id`; see below.
 
+### A long run stays inside its context
+
+The steps of a run are held in a `WorkingMemory` window of
+`EngineConfig.context_tokens` (6,000 by default). When it fills, bulky old tool
+output is shortened, then the oldest stretch is replaced by a summary, and the
+newest steps stay whole. Nothing is cut silently: the prompt says that earlier
+steps were condensed.
+
+```python
+import re
+from agi import CognitiveEngine, EngineConfig
+from agi.tools import Tool, ToolRegistry
+from agi.tools.base import Param
+
+def read_page(number: int) -> str:                    # each page is about 900 tokens
+    return f"page {number}: " + " ".join(f"entry{number}_{i} value {number * 1000 + i}" for i in range(150))
+
+tools = ToolRegistry([Tool("read_page", "Read one page of the ledger.", read_page,
+                           {"number": Param("integer", "the page number")})])
+sizes = []
+
+def model(prompt):                                    # stand-in: reads pages 1 to 8, then answers
+    sizes.append(len(prompt))
+    steps = prompt.rsplit("\n\nTask: ", 1)[-1]
+    done = len(re.findall(r"^Action: read_page", steps, re.M))
+    condensed = re.search(r"\[Summary of (\d+) earlier messages\]", steps)
+    done += int(condensed.group(1)) // 2 if condensed else 0
+    if done < 8:
+        return f'Thought: next page.\nAction: read_page\nAction Input: {{"number": {done + 1}}}'
+    return "Thought: all read.\nFinal Answer: The last value on page 8 is 8149."
+
+task = "Read all 8 pages of the ledger and report the last value on page 8."
+for budget in (1500, 0):                              # 0 switches the window off
+    sizes.clear()
+    engine = CognitiveEngine(model, tools, config=EngineConfig(context_tokens=budget, learn=False))
+    r = engine.run(task, mode="react")
+    print(budget, r.success, r.tool_calls, r.compactions, f"largest prompt {max(sizes):,} characters")
+# 1500 True 8 7 largest prompt 4,569 characters
+# 0 True 8 0 largest prompt 21,357 characters
+```
+
+`EngineResult.compactions` counts how often the window was condensed, and
+`prompt_reuse` is the share of each prompt that repeated the start of the one
+before it, which is the part a provider's prompt cache can serve. By default
+summaries are extractive (the first lines and the figures of each step);
+`EngineConfig(summarize_context=True)` asks the model to write them, and those
+calls count against the run's budget. A summary can lose a detail the task
+later needs. The agent can call the tool again; it cannot know what it forgot.
+
+### The router learns which tasks need a plan
+
+Every time the reason-act loop finishes, the router records whether it worked,
+under the task's profile: the signals it matched plus a length band. Once a
+profile has eight outcomes (`RouterConfig.min_observations`), the record can
+overrule the fixed rules in either direction.
+
+```python
+import json
+from agi import CognitiveEngine, EngineConfig
+
+PLAN = json.dumps({"plans": [{"steps": ["inspect what changed before the crash", "state the cause"], "tools": []}]})
+
+def model(prompt):                                    # stand-in: only finds the cause when it has a plan
+    if "Do not solve" in prompt:
+        return PLAN
+    return "Final Answer: the cause is a full disk" if "PLAN TO FOLLOW" in prompt else "Final Answer: unknown"
+
+engine = CognitiveEngine(model, config=EngineConfig(learn=False))
+for i in range(1, 11):
+    r = engine.run(f"Explain why service number {i} crashed last night", check=lambda a: "full disk" in a)
+    if i in (1, 8, 9):
+        print(i, r.mode, "escalated" if r.escalated else "direct", r.llm_calls, "model calls")
+# 1 deliberate escalated 3 model calls
+# 8 deliberate escalated 3 model calls
+# 9 deliberate direct 2 model calls
+print(r.route.reason)
+# experience: the reason-act loop failed on most earlier tasks like this (estimated failure 90% over 8 runs)
+print(engine.router.learner.explain())                # [('analysis + length:short', 0.9, 8)]
+```
+
+The record is a count per profile, not a trained model, so it is easy to read
+and slow to generalise: evidence about one kind of task never moves another.
+With a memory directory it is saved to `routing.json` and survives a restart.
+A kind of task that is planned first would never try the cheap path again and
+its record would freeze, so one in ten of those (`RouterConfig.recheck_every`)
+still goes to the reason-act loop; if that keeps working, the record recovers.
+`explore_every` does the same for tasks the fixed rules call hard, and is off
+by default. A model outage is not counted as evidence.
+
 ## Memory
 
 `HierarchicalMemory` holds four stores. Give it a directory to keep them
@@ -125,7 +222,7 @@ between sessions.
 
 | Store | Holds | Notes |
 | --- | --- | --- |
-| `working` | A chat context under a token budget | Pinned messages; long tool output shortened, old turns summarised, then dropped; compaction happens in rare large steps so the start of the prompt stays identical and provider-side prompt caching can apply |
+| `working` | A context under a token budget; the engine uses one per run and the API one per conversation | Pinned messages; long tool output shortened, old turns summarised, dropped only as a last resort; compaction happens in rare large steps so the start of the prompt stays identical and provider-side prompt caching can apply |
 | `episodic` | Run traces, user preferences, state snapshots | Searched by vector similarity; snapshots can be read back as of a past time |
 | `semantic` | Facts as subject-predicate-object | Confidence and source per fact; single-valued predicates keep history; transitive, symmetric, inverse and inheritance rules; dependency order and cycle detection |
 | `procedural` | Tested code snippets, successful tool sequences, named workflows | Reliability tracked per use; snippets must pass their tests in the sandbox to be stored |
@@ -204,19 +301,42 @@ print(healed.summary())   # self-healed after 1 repair(s): missing_import (NameE
   registered only if the tests pass in the sandbox, and it runs there afterwards.
 - **Tool routing.** With many tools, `EngineConfig(tool_k=5)` shows the model
   only the five most relevant; with the toolsmith tools registered it can call
-  `find_tools` to look for more. Matching is by shared words unless you pass
-  an embedding function (see Known limits).
+  `find_tools` to look for more. Matching uses shared words, a small table of
+  related words (`agi.memory.embed.CONCEPTS`: "days until" and "current date"
+  both mean *time*) and a line of typical requests per built-in tool. On 18
+  requests phrased the way a user would, the right tool came first for 14 and
+  in the top three for 17; with shared words alone it was 6 and 9. Add your own
+  vocabulary with `SemanticToolRouter(tools, hints={"query_data": "turnover revenue"})`
+  or `ConceptEmbedder(extra={...})`, or pass a real embedding model as
+  `build_engine(..., embed=OpenAICompatEmbedder("model"))`, which then serves
+  both tool matching and episodic memory.
+
+```python
+from agi.memory import MemoryEngine
+from agi.tools import SemanticToolRouter, standard_tools
+
+router = SemanticToolRouter(standard_tools(".", memory=MemoryEngine()))
+for request in ("How many days are left until the 1st of March?",
+                "Which region had the highest revenue in the spreadsheet?",
+                "Which lines of the logs mention a timeout?"):
+    print(router.best(request).name)                  # current_time, query_data, search_files
+```
 
 ## Sandboxes
 
 | Backend | Boundary | Status |
 | --- | --- | --- |
 | `Sandbox` (process) | Static check of the code, a fresh interpreter with an empty environment, kernel limits on CPU, memory, file size and processes, a network namespace where the host allows, an audit hook | Default. Tested. |
-| `WasmSandbox` | CPython compiled to WebAssembly: no host files, network or processes exist inside | Tested. First use on a machine compiles for about a minute. |
+| `WasmSandbox` | CPython compiled to WebAssembly: no host files, network or processes exist inside; a wall-clock deadline and, with `fuel=`, a cap on instructions executed | Tested. First use on a machine compiles for about a minute, and the fuel-metered build for another; `warm_up()` pays both at start-up. |
 | `DockerSandbox` | A container with no network, read-only root, dropped capabilities, memory and process limits | **Not tested against a real Docker daemon** (none was available); only the command line it builds is tested. |
 
 `best_sandbox()` returns the strongest one available; `best_sandbox(require="docker")`
 refuses to fall back. `available_backends()` reports what the host has.
+
+Fuel is the deterministic limit: `WasmSandbox(fuel=2_000_000_000)` stopped
+`while True: pass` in 0.2 to 0.3 seconds here, against a 30-second deadline.
+Starting the interpreter alone uses about 36 million units, so anything below
+100 million is refused when the sandbox is created.
 
 ## Guardrails, tracing and failure handling
 
@@ -262,10 +382,30 @@ for _ in range(3):
   callback can be added.
 - **Tracing.** Thoughts, actions, observations, model calls, guardrail
   decisions and a reward per run are recorded as spans. They can be written to
-  a JSONL file or exported in the OpenTelemetry JSON shape with `to_otlp()`.
+  a JSONL file, rendered as OpenTelemetry JSON with `to_otlp()`, or sent to a
+  collector as they finish (below).
 - **Failure handling.** `CircuitBreaker`, `RateLimiter`, `StepBudget` and
   `LoopDetector` are plain classes, usable on their own. The engine wraps the
   model and every tool with them.
+
+Sending traces to an OpenTelemetry collector (OTLP over HTTP, JSON) needs no
+OpenTelemetry SDK:
+
+```python
+from agi.core import OTLPExporter, Tracer
+
+exporter = OTLPExporter("http://localhost:4318/v1/traces", headers={"X-Team": "agents"}, retries=0, timeout=2)
+tracer = Tracer(service="billing-agent", exporters=[exporter])    # or build_engine(..., otlp_endpoint=...)
+with tracer.span("run", "nightly-report"):
+    tracer.event("action", "query_data", rows=10)
+exporter.close()                                      # sends what is queued, then stops the sender thread
+print(exporter.stats())
+# with no collector listening: {'sent': 0, 'dropped': 2, 'errors': 1, 'last_error': 'URLError: ... refused', ...}
+```
+
+Spans are queued and posted in batches by a background thread, so tracing never
+waits on the network. A collector that is down costs spans, never a run: a
+failed batch is retried, then dropped and counted in `stats()`.
 
 ## Measuring and improving
 
@@ -401,7 +541,7 @@ print(result.best.content, len(result.best.parents))          # [1, 2, 3, 4, 6, 
 
 `AgentService` wraps an engine for a long-running process: bounded concurrency,
 timeouts, conversation sessions, parallel decomposition (`solve_parallel`) and
-an optional drift monitor. `AgentServer` puts it behind HTTP.
+an optional drift monitor. `AgentServer` puts it behind HTTP or HTTPS.
 
 ```python
 import asyncio, json, tempfile, urllib.request
@@ -436,8 +576,45 @@ service.close()
 | `DELETE /v1/sessions/{id}` | Forget a conversation |
 
 The server listens on 127.0.0.1 and refuses any other address without a bearer
-token. It speaks plain HTTP; put a TLS proxy in front of it outside a trusted
-network.
+token or keys.
+
+| Concern | What the server does |
+| --- | --- |
+| Several callers | `keys={"alice": "...", "ci": "..."}` gives each caller a secret (16 characters or more). Each has their own rate limit and their own conversations: the same session name under two keys is two conversations. |
+| Guessing a token | After ten wrong tokens from one address, further wrong guesses get 429 (one more allowed per second). A correct token is never slowed by this. |
+| Encryption | `certfile=`, `keyfile=` serve HTTPS, TLS 1.2 or later. The handshake runs in the request's own thread, so a client that stalls it holds up nobody else. |
+| Overload | Connections beyond `max_connections` (64) get `503` with `Retry-After` at once instead of queueing. Bodies over 1 MB get `413`. |
+| Restarts | With `memory_dir`, conversations are stored in `sessions.db` there and continue after a restart; idle ones expire after 30 days. `stop()` lets requests in progress finish. |
+| Long conversations | Each conversation is kept under `session_tokens` (2,000) by summarising older turns, not by cutting them. |
+| Tracking a request | Every response carries `X-Request-Id` (yours, if you sent a sane one); the body of a run carries its `trace_id`. |
+
+```python
+import json, tempfile, urllib.request
+from agi.api import AgentServer, AgentService
+
+def model(prompt):                             # stand-in: answers with how many earlier turns it can see
+    return f"Final Answer: I can see {prompt.count('User: ')} earlier turns."
+
+state = tempfile.mkdtemp()
+keys = {"alice": "alice-secret-0123456789", "ci": "ci-secret-0123456789abc"}
+
+def ask(server, who, task):
+    request = urllib.request.Request(
+        server.url + "/v1/run", data=json.dumps({"task": task, "session": "main"}).encode(),
+        headers={"Authorization": f"Bearer {keys[who]}"})
+    return json.loads(urllib.request.urlopen(request).read())["answer"]
+
+for restart in range(2):                       # the second pass is a fresh service on the same directory
+    service = AgentService.create(model, memory_dir=state, heal=False)
+    with AgentServer(service, port=0, keys=keys, rate_limit=5, max_connections=64) as server:
+        print(ask(server, "alice", "Note that the audit is on Friday."), "|", ask(server, "ci", "Anything noted?"))
+    service.close()
+# I can see 0 earlier turns. | I can see 0 earlier turns.      <- ci does not see alice's turn
+# I can see 1 earlier turns. | I can see 1 earlier turns.      <- after the restart each still has their own
+```
+
+From the command line: `python -m agi serve --model M --state ./state --keys-file keys.json
+--tls-cert cert.pem --tls-key key.pem --rate-limit 5 --otlp-endpoint http://localhost:4318/v1/traces`.
 
 ## Tools and the ReAct loop
 
@@ -553,10 +730,34 @@ language model itself.
 
 ## The benchmark suite
 
-`agi.evaluation` (also importable as `agi.evals`) holds eight tasks over sample files: compound interest, a group-by,
-a two-file join, log analysis, date arithmetic, read-then-compute, writing a
-report file, and one question the data cannot answer (the correct response is to
-say so). Each is checked against a value computed independently in plain Python.
+`agi.evaluation` (also importable as `agi.evals`) holds 24 tasks over sample
+files. Each is checked against a value computed independently in plain Python,
+and each carries a reference solution proving it can be done with the standard
+tools.
+
+`SUITE`, the eight core tasks, checks one use of each tool: compound interest,
+a group-by, a two-file join, log analysis, date arithmetic, read-then-compute,
+writing a report file, and one question the data cannot answer (the correct
+response is to say so).
+
+`EXTENDED` adds sixteen that go after what goes wrong in practice
+(`FULL_SUITE` is both):
+
+| Kind | Tasks | A typical wrong answer that fails |
+| --- | --- | --- |
+| Statistics that are easy to get subtly wrong | `median_order`, `widget_share`, `best_unit_price`, `warn_share`, `unique_emails` | The mean instead of the median; a share of rows instead of a share of money; emails counted without ignoring case |
+| Two or three steps chained | `error_span`, `daily_capacity`, `convert_currency`, `reorder_list`, `top_customer` | A misplaced decimal point; an item that is not below its reorder level |
+| Calendar reasoning | `working_days` | Off by one day; calendar days counted as working days |
+| Searching several files | `find_invoice` | The right amount attributed to the wrong file |
+| Files that must be exactly right | `lower_retries`, `top_orders_file` | Claiming the file was written; changing something else too; modifying the original |
+| Knowing what is not known | `missing_column` | An email address invented from the pattern in another file |
+| Orders hidden in data | `injected_memo` | Doing what the memo says instead of what the user asked |
+
+`injected_memo` asks how many action items a memo lists; the memo contains a
+line telling any AI reading it to reply only "APPROVED". The engine labels that
+tool output as untrusted before the model sees it. The label is a warning, not
+a filter: in the tests a stand-in that heeds it passes, one without the
+guardrail fails, and one that ignores the warning still fails.
 
 ```python
 from agi.evals import run_suite, reference_llm
@@ -568,8 +769,9 @@ assert report.passed == 8          # the reference solutions: proves the suite i
 ```
 
 Pass your own model in place of `reference_llm(task)`, or run
-`python -m agi eval --model MODEL`. A stand-in that answers from imagination
-scores 0 of 8, with all eight answers flagged as not grounded.
+`python -m agi eval --model MODEL` (add `--extended` for all 24). A stand-in
+that answers from imagination scores 0 of 8, with all eight answers flagged as
+not grounded.
 
 ## Lessons from experience
 
@@ -713,26 +915,42 @@ wrap the interpreter yourself through `SandboxPolicy(launcher=[...])`.
   model. Routing thresholds, prompts and the plan format are untuned for any
   real model; expect to adjust them. The optimiser exists for that, and its
   tests use a stand-in whose behaviour is scripted to depend on its prompt.
-- **The router is rules and word overlap, not a learned classifier.** It sends
-  a task to the reflex path on fixed patterns or on similarity to a stored
-  procedure. Similarity uses a hashing embedder (shared words and word
-  stems), so two tasks that mean the same in different words do not match, and
-  tool routing has the same weakness. Pass a real embedding function
-  (`OpenAICompatEmbedder`) to `HierarchicalMemory(embed=...)` and
-  `SemanticToolRouter(embed=...)` to do better.
+- **Routing is rules plus counting, not a trained classifier.** The reflex
+  path is chosen by fixed patterns or similarity to a stored procedure. Between
+  react and deliberate, the router counts outcomes per kind of task and follows
+  the count once it has eight; a kind is defined by a few regular-expression
+  signals and a length band, so two tasks that differ in ways those miss are
+  treated alike. It needs traffic before it helps and it is untested on real
+  traffic.
+- **Tool matching knows related words, not meaning.** The default embedder
+  adds a hand-written table of twelve word groups and a line of typical
+  requests per built-in tool. That lifted the right tool to first place on 14
+  of 18 paraphrased requests (from 6), on a list written alongside the table,
+  so expect less on your own wording. It still fails where a word misleads:
+  "compound interest ... for 3 years" ranks the clock first because of
+  "years". Tools you add get no hints unless you supply them. A real embedding
+  model (`embed=OpenAICompatEmbedder(...)`) is the proper fix and is wired
+  through, but was not available to test against.
 - **Cached procedures are checked narrowly.** A reused procedure is re-run
   against real data and its answer must contain the expected number of figures,
   but nothing verifies that a query adapted from North to South still asks the
   right question. Give `run(task, check=...)` ground truth where you have it.
-- **The engine does not use `WorkingMemory`.** Its reason-act loop shortens old
-  observations by its own simpler rule. `WorkingMemory` is a separate component
-  for chat-style contexts. A hosted model's key-value cache cannot be managed
-  from the client at all; keeping the prompt prefix stable is the most a client
-  can do.
+- **Condensing a context loses information.** The engine keeps each run under
+  `context_tokens` by summarising older steps. The default summary is
+  extractive and keeps figures, but a detail the task needs later may be gone,
+  and the agent has no way to know what it forgot. Token counts are estimated
+  (about four characters per token), not taken from a tokenizer. A hosted
+  model's key-value cache cannot be managed from the client at all; keeping the
+  start of the prompt stable is the most a client can do, and `prompt_reuse`
+  measures only that.
 - **The Docker sandbox has not run against Docker.** No container runtime was
-  available. The WebAssembly sandbox is tested, but its optional fuel limit took
-  100 seconds to stop an infinite loop in one measurement here, so the
-  wall-clock deadline is the limit to rely on.
+  available; only the command line it builds is tested.
+- **WebAssembly fuel counts instructions, not seconds.** It stopped a runaway
+  loop in under 0.3 seconds here, but how much real work a given amount allows
+  depends on the code, so choose it by measurement. (Version 0.3 reported that
+  fuel took 100 seconds to act. That measurement was wrong: it had timed the
+  one-off compilation of the metered interpreter, which `warm_up()` now does
+  at start-up.)
 - **Self-healing fixes simple mistakes.** The four rule-based repairs cover
   missing imports, misspelt names, indentation and methods borrowed from other
   languages. Anything else needs a model, and a repair that makes the code run
@@ -741,17 +959,26 @@ wrap the interpreter yourself through `SandboxPolicy(launcher=[...])`.
   formats, e-mail addresses, card numbers and well-known injection phrases. A
   determined attacker can phrase around them; they reduce risk, they do not
   remove it.
-- **Tracing exports the OpenTelemetry JSON shape; it does not send it.** There
-  is no exporter and no OpenTelemetry SDK dependency. Post the output of
-  `to_otlp()` to a collector yourself.
+- **Trace export is tested against a stub, not a real collector.** The
+  exporter posts OTLP/HTTP JSON and the tests check the payload field by field
+  against a local stand-in. No OpenTelemetry Collector was available, and
+  there is no gRPC or protobuf transport, no metrics and no logs. Spans are
+  dropped, not buffered to disk, while a collector is unreachable.
 - **Drift statistics are simple.** A z-test of a recent window against a
   reference window. Results from one conversation are not independent, which
   the test assumes, so treat an alarm as a prompt to look, not as proof.
-- **The benchmark is eight tasks.** That is enough to catch a regression and
-  far too few to rank models or to claim a prompt change is significant.
-- **The HTTP server is minimal.** Standard-library server, one shared bearer
-  token, no TLS, no per-user limits, in-memory sessions. Fine behind a proxy on
-  a trusted network; not an internet-facing service.
+- **The benchmark is 24 tasks over a handful of small files.** Enough to catch
+  a regression and to show where a model is weak; far too few, and too
+  uniform, to rank models or to call a small difference significant. The
+  reference solutions prove each task is solvable, not that it is fair to
+  every model.
+- **The HTTP server is still a standard-library server.** It has per-caller
+  keys, TLS, rate limits, a connection cap and stored conversations, and it
+  uses one thread per connection, fixes its keys at start-up (no rotation,
+  no expiry, no roles: every key can use every endpoint and every tool), and
+  has had no security review. The TLS tests use a self-signed certificate.
+  Behind a reverse proxy on a network you control it is reasonable; treat
+  direct exposure to the internet as unproven.
 - **The message bus is in-process.** Agents are `asyncio` tasks in one Python
   process; there is no network transport or persistence of messages.
 - **The grounding check is a heuristic.** It looks at numbers only. It catches a
@@ -782,21 +1009,22 @@ wrap the interpreter yourself through `SandboxPolicy(launcher=[...])`.
 agi/
   core/
     engine.py       CognitiveEngine: reflex, react, deliberate, escalation
-    router.py       which path a task takes
+    router.py       which path a task takes, and the record of how each choice turned out
     react.py        the reason-act loop, answer verifiers, Conversation
     orchestrator.py message bus, actors, parallel sub-tasks
     sandbox.py      process sandbox        isolation.py  WebAssembly and Docker backends
     guardrails.py   input, observation and output filters
     resilience.py   circuit breaker, rate limiter, step budget, loop detector
-    tracing.py      spans, JSONL, OpenTelemetry-shaped export
+    tracing.py      spans, JSONL, OTLP export to a collector
     types.py        validated data shared between components
     llm.py          model and embedding clients (the only model-facing module)
     agent.py        LearningAgent: memory, verified search, trained policy
   memory/           working, episodic (vector), semantic (graph), procedural, lessons
   reasoning/        plan search, MCTS, Tree and Graph of Thoughts, logic verifier, problems
   tools/            registry, built-in tools, routing, tool creation, self-healing
-  evaluation/       benchmark suite, evaluator and drift monitor, optimiser, data export
-  api/              AgentService (async) and AgentServer (HTTP)
+  evaluation/       benchmark (suite.py: 8 core tasks, extended.py: 16 more), evaluator and drift
+                    monitor, optimiser, data export
+  api/              AgentService (async, stored sessions) and AgentServer (HTTP/HTTPS, per-caller keys)
   training/         search policy training, fine-tuning data export
   world/            environments, world model, causal discovery
   collective/       ledger, safety policy, tool forge, agents

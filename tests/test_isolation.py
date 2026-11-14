@@ -6,9 +6,12 @@ import time
 
 import pytest
 
-from agi.core.isolation import (DockerSandbox, SandboxUnavailable, WasmSandbox, available_backends,
-                                best_sandbox)
-from agi.core.sandbox import Sandbox, SandboxPolicy
+from agi.domain.exceptions import SandboxUnavailable
+from agi.domain.value_objects.sandbox import SandboxPolicy
+from agi.infrastructure.adapters.sandbox.docker import DockerSandbox
+from agi.infrastructure.adapters.sandbox.process import Sandbox
+from agi.infrastructure.adapters.sandbox.selection import available_backends, best_sandbox
+from agi.infrastructure.adapters.sandbox.wasm import WasmSandbox
 
 needs_wasm = pytest.mark.skipif(not WasmSandbox.available(), reason="wasi-python is not installed")
 needs_docker = pytest.mark.skipif(not DockerSandbox.available(), reason="no Docker daemon on this host")
@@ -142,7 +145,7 @@ def test_wasm_refuses_fuel_too_small_to_start_the_interpreter():
 @needs_wasm
 def test_wasm_guest_cannot_reach_host_files_network_or_processes(wasm):
     # Bypass the static gate on purpose: the point is that the *runtime* boundary holds without it.
-    from agi.core import sandbox as module
+    import agi.infrastructure.adapters.sandbox.process as module
     probe = '''
 import json, sys
 out = {}

@@ -3,13 +3,14 @@ import json
 
 import pytest
 
-from agi.core.engine import CognitiveEngine, EngineConfig
-from agi.core.llm import ScriptedLLM
-from agi.core.react import SYSTEM
-from agi.evaluation import (SUITE, DriftMonitor, Evaluation, Evaluator, Mutation, Optimizer, TaskScore, Tolerance,
-                            add_instruction, fingerprint, load_config, mcnemar, propose_instructions, reference_llm,
-                            save_config, set_field, with_field)
-from agi.tools import standard_tools
+from agi.application.cortex.engine import CognitiveEngine, EngineConfig
+from agi.application.cortex.react import SYSTEM
+from agi.eval.evaluator import DriftMonitor, Evaluation, Evaluator, TaskScore, Tolerance, fingerprint, mcnemar
+from agi.eval.optimizer import (Mutation, Optimizer, add_instruction, load_config, propose_instructions, save_config,
+                                set_field, with_field)
+from agi.eval.suite import SUITE, reference_llm
+from agi.infrastructure.adapters.execution.builtin import standard_tools
+from agi.infrastructure.adapters.llm.scripted import ScriptedLLM
 
 TASKS = {task.name: task for task in SUITE}
 

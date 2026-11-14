@@ -2,9 +2,12 @@ import json
 
 import pytest
 
-from agi.llm import ScriptedLLM
-from agi.memory import (FAILURE, SUCCESS, Episode, HeuristicExtractor, KnowledgeGraph, Lesson,
-                        LLMExtractor, MemoryEngine, Step, error_signature, keywords)
+from agi.application.memory.engine import MemoryEngine
+from agi.application.memory.extract import HeuristicExtractor, LLMExtractor, error_signature
+from agi.domain.entities.memory import FAILURE, SUCCESS, Episode, Lesson, Step
+from agi.domain.services.embedding import keywords
+from agi.infrastructure.adapters.llm.scripted import ScriptedLLM
+from agi.infrastructure.adapters.persistence.knowledge_graph import KnowledgeGraph
 
 CSV_FIX = Episode(
     "Parse the customer CSV export and compute the average order value", SUCCESS, tags=("csv",),

@@ -5,13 +5,16 @@ from typing import Literal, Optional
 
 import pytest
 
-from agi.core.guardrails import Guardrails
-from agi.core.llm import ScriptedLLM
-from agi.core.sandbox import Sandbox
-from agi.core.tracing import Tracer
-from agi.tools import (ManagedRegistry, SelfHealer, SemanticToolRouter, Tool, ToolError, ToolRegistry, diagnose,
-                       from_function, healing_python_tool, parse_docstring, repair_arguments,
-                       signature_from_source, standard_tools, tool_from_source, toolsmith_tools)
+from agi.application.cortex.guardrails import Guardrails
+from agi.application.tools.healing import SelfHealer, diagnose, healing_python_tool, repair_arguments
+from agi.application.tools.managed import ManagedRegistry
+from agi.application.tools.router import SemanticToolRouter, toolsmith_tools
+from agi.domain.entities.tool import Tool, ToolError, ToolRegistry, from_function
+from agi.domain.entities.tool_schema import parse_docstring, signature_from_source, tool_from_source
+from agi.infrastructure.adapters.execution.builtin import standard_tools
+from agi.infrastructure.adapters.llm.scripted import ScriptedLLM
+from agi.infrastructure.adapters.observability.tracing import Tracer
+from agi.infrastructure.adapters.sandbox.process import Sandbox
 
 
 @pytest.fixture(scope="module")

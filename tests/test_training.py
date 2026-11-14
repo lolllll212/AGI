@@ -4,14 +4,15 @@ import random
 import pytest
 
 from agi import LearningAgent, Task
-from agi.llm import ScriptedLLM
-from agi.memory import MemoryEngine
-from agi.react import ReActAgent
-from agi.reasoning import MCTS, PipelineSynthesis
-from agi.reasoning.problems import OPS
-from agi.tools import ToolRegistry, calculator_tool
-from agi.training import (SearchPolicy, compare, export_jsonl, featurize, make_task, make_tasks,
-                          samples_from, to_chat_example, train_policy)
+from agi.application.cortex.react import ReActAgent
+from agi.application.memory.engine import MemoryEngine
+from agi.application.reasoning.mcts import MCTS
+from agi.application.reasoning.problems import OPS, PipelineSynthesis
+from agi.domain.entities.tool import ToolRegistry
+from agi.infrastructure.adapters.execution.builtin import calculator_tool
+from agi.infrastructure.adapters.llm.scripted import ScriptedLLM
+from agi.training.dataset import export_jsonl, to_chat_example
+from agi.training.policy import SearchPolicy, compare, featurize, make_task, make_tasks, samples_from, train_policy
 
 SECOND_LARGEST = [([3, 1, 2], 2), ([5, 4, 9, 1], 5), ([7, 8, 3], 7), ([1, 2], 1), ([4, 6, 5, 0], 5)]
 

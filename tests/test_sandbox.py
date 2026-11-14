@@ -2,8 +2,10 @@ import os
 
 import pytest
 
-import agi.sandbox as sandbox_module
-from agi.sandbox import Sandbox, SandboxPolicy, check_source
+import agi.infrastructure.adapters.sandbox.process as sandbox_module
+from agi.domain.services.source_check import check_source
+from agi.domain.value_objects.sandbox import SandboxPolicy
+from agi.infrastructure.adapters.sandbox.process import Sandbox
 
 FAST = SandboxPolicy(wall_time_s=3.0, cpu_time_s=1, memory_mb=256)
 

@@ -7,11 +7,14 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
-from agi.collective import Builder, Collective, SafetyReviewer, SpecReviewer, ToolNeed
-from agi.memory import MemoryEngine
-from agi.tools import (Param, Tool, ToolError, ToolRegistry, Workspace, calculator_tool, check_url,
-                       data_tool, evaluate, file_tools, forge_tools, from_function, html_to_text,
-                       http_tool, memory_tools, python_tool, standard_tools, time_tool)
+from agi.application.memory.engine import MemoryEngine
+from agi.application.swarm.agents import Builder, SafetyReviewer, SpecReviewer, ToolNeed
+from agi.application.swarm.collective import Collective
+from agi.domain.entities.tool import Param, Tool, ToolError, ToolRegistry, from_function
+from agi.domain.services.arithmetic import evaluate
+from agi.infrastructure.adapters.execution.builtin import (Workspace, calculator_tool, check_url, data_tool,
+                                                           file_tools, forge_tools, html_to_text, http_tool,
+                                                           memory_tools, python_tool, standard_tools, time_tool)
 
 
 # --------------------------------------------------------------- registry --- #

@@ -4,13 +4,16 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
-from agi import evals
-from agi.__main__ import main
-from agi.evals import SUITE, has_number, reference_llm, run_suite, write_fixtures
-from agi.llm import LLMError, OpenAICompatEmbedder, OpenAICompatLLM
-from agi.memory import Lesson, MemoryEngine
-from agi.react import ReActAgent
-from agi.tools import standard_tools
+from agi.application.cortex.react import ReActAgent
+from agi.application.memory.engine import MemoryEngine
+from agi.domain.entities.memory import Lesson
+from agi.domain.exceptions import LLMError
+from agi.eval import suite as evals
+from agi.eval.suite import SUITE, has_number, reference_llm, run_suite, write_fixtures
+from agi.infrastructure.adapters.embedding.openai_compat import OpenAICompatEmbedder
+from agi.infrastructure.adapters.execution.builtin import standard_tools
+from agi.infrastructure.adapters.llm.openai_compat import OpenAICompatLLM
+from agi.infrastructure.cli.main import main
 
 
 def test_truths_are_what_a_person_would_compute_by_hand():

@@ -1,5 +1,6 @@
 from agi import LearningAgent, Sandbox, Task
-from agi.memory import Lesson, MemoryEngine
+from agi.application.memory.engine import MemoryEngine
+from agi.domain.entities.memory import Lesson
 
 EVENS = Task("count the distinct even numbers in a list",
              [([2, 2, 4, 3], 2), ([1, 5, 5], 0), ([8, 8, 8], 1), ([6, 4, 2, 1, 1], 3)], ("count",))

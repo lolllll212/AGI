@@ -2,11 +2,13 @@ import json
 
 import pytest
 
-from agi.llm import ScriptedLLM
-from agi.memory import MemoryEngine
-from agi.react import (Conversation, GroundingVerifier, LLMVerifier, ReActAgent, ReActStep,
-                       numbers_in, parse_reply)
-from agi.tools import Param, Tool, ToolRegistry, calculator_tool, standard_tools
+from agi.application.cortex.react import (Conversation, GroundingVerifier, LLMVerifier, ReActAgent, ReActStep,
+                                          parse_reply)
+from agi.application.memory.engine import MemoryEngine
+from agi.domain.entities.tool import Param, Tool, ToolRegistry
+from agi.domain.services.text import numbers_in
+from agi.infrastructure.adapters.execution.builtin import calculator_tool, standard_tools
+from agi.infrastructure.adapters.llm.scripted import ScriptedLLM
 
 
 def act(tool, args, thought="next"):

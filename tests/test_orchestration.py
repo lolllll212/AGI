@@ -6,12 +6,12 @@ import time
 
 import pytest
 
-from agi.core.llm import ScriptedLLM
-from agi.core.orchestrator import Actor, Message, MessageBus, Orchestrator
-from agi.core.resilience import LoopDetected
-from agi.core.types import EngineResult
-from agi.reasoning import (Execution, GraphOfThoughts, LLMOperations, Plan, PlanProblem, parse_plans, search_plans)
-
+from agi.application.reasoning.got import GraphOfThoughts, LLMOperations
+from agi.application.reasoning.planner import Execution, Plan, PlanProblem, parse_plans, search_plans
+from agi.application.swarm.orchestrator import Actor, Message, MessageBus, Orchestrator
+from agi.domain.exceptions import LoopDetected
+from agi.domain.value_objects.records import EngineResult
+from agi.infrastructure.adapters.llm.scripted import ScriptedLLM
 
 # ------------------------------------------------------ graph of thoughts --- #
 DATA = [9, 3, 7, 1, 8, 2, 6, 4, 5, 0, 11, 10]

@@ -5,16 +5,19 @@ import time
 
 import pytest
 
-from agi.core.engine import CognitiveEngine, EngineConfig
-from agi.core.guardrails import Guardrails, Rule
-from agi.core.llm import ScriptedLLM
-from agi.core.resilience import CircuitBreaker
-from agi.core.router import Router, RouterConfig
-from agi.core.sandbox import Sandbox
-from agi.core.tracing import Tracer
-from agi.evaluation.suite import write_fixtures
-from agi.memory import HierarchicalMemory
-from agi.tools import SelfHealer, ToolRegistry, healing_python_tool, standard_tools
+from agi.application.cortex.engine import CognitiveEngine, EngineConfig
+from agi.application.cortex.guardrails import Guardrails, Rule
+from agi.application.cortex.resilience import CircuitBreaker
+from agi.application.cortex.router import Router, RouterConfig
+from agi.application.memory.hierarchy import HierarchicalMemory
+from agi.application.tools.healing import SelfHealer, healing_python_tool
+from agi.domain.entities.tool import ToolRegistry
+from agi.domain.services.arithmetic import evaluate
+from agi.eval.suite import write_fixtures
+from agi.infrastructure.adapters.execution.builtin import standard_tools
+from agi.infrastructure.adapters.llm.scripted import ScriptedLLM
+from agi.infrastructure.adapters.observability.tracing import Tracer
+from agi.infrastructure.adapters.sandbox.process import Sandbox
 
 NORTH = "What is the total sales amount for the North region in sales.csv?"
 SOUTH = "What is the total sales amount for the South region in sales.csv?"
@@ -68,7 +71,7 @@ def test_capabilities_reply_lists_the_real_tools(tools):
     ("17.5 + 3", "17.5 + 3"), ("compute 2^10", "2**10"),
 ])
 def test_plain_arithmetic_goes_straight_to_the_calculator(tools, text, expression):
-    route = Router(tools, evaluate=__import__("agi.tools", fromlist=["evaluate"]).evaluate).route(text)
+    route = Router(tools, evaluate=evaluate).route(text)
     assert route.mode == "reflex" and route.calls[0].tool == "calculator"
     assert route.calls[0].args == {"expression": expression}
 
@@ -77,7 +80,7 @@ def test_plain_arithmetic_goes_straight_to_the_calculator(tools, text, expressio
     "what is the capital of France?", "what is 12 apples plus 3 pears?", "2024", "what is 5 / (", "call 555-1234",
 ])
 def test_things_that_only_look_like_arithmetic_are_not_reflexes(tools, text):
-    from agi.tools import evaluate
+    from agi.domain.services.arithmetic import evaluate
     assert Router(tools, evaluate=evaluate).route(text).mode != "reflex"
 
 

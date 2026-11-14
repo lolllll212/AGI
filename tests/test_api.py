@@ -9,10 +9,13 @@ import urllib.request
 
 import pytest
 
-from agi.api import AgentServer, AgentService, build_engine
-from agi.core.engine import EngineConfig
-from agi.core.llm import ScriptedLLM
-from agi.evaluation import DriftMonitor, write_fixtures
+from agi.application.cortex.engine import EngineConfig
+from agi.application.interfaces.service import AgentService
+from agi.eval.evaluator import DriftMonitor
+from agi.eval.suite import write_fixtures
+from agi.infrastructure.adapters.llm.scripted import ScriptedLLM
+from agi.infrastructure.api.server import AgentServer
+from agi.infrastructure.di.container import build_engine
 
 QUERY = ('Thought: query the file.\nAction: query_data\nAction Input: {"file": "sales.csv", "sql": '
          '"SELECT ROUND(SUM(amount), 2) FROM data WHERE region = \'%s\'"}')

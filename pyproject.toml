@@ -4,26 +4,37 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agi-toolkit"
-version = "0.4.0"
+version = "0.5.0"
 description = "Building blocks for more capable, more trustworthy AI agents: a dual-process engine (reflex, reason-act, deliberate), hierarchical memory, verified plan search, self-healing sandboxed tools, guardrails, tracing, and measured self-optimisation."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = ["conflux-state>=0.9.3", "pydantic>=2"]
 
 [project.optional-dependencies]
-test = ["pytest>=7"]
+test = ["pytest>=7", "pyyaml>=6"]
 vector = ["numpy", "faiss-cpu"]          # faster nearest-neighbour search for episodic memory
 graph = ["networkx"]                     # graph algorithms for semantic memory
 wasm = ["wasi-python>=0.1.4; python_version >= '3.11'"]   # WebAssembly sandbox (large download)
 all = ["numpy", "faiss-cpu", "networkx", "wasi-python>=0.1.4; python_version >= '3.11'"]
 
 [project.scripts]
-agi-demo = "agi.__main__:main"
+agi = "agi.infrastructure.cli.main:main"
+agi-demo = "agi.infrastructure.cli.main:main"
 
 [tool.setuptools.packages.find]
+where = ["src"]
 include = ["agi*"]
+
+[tool.setuptools.package-data]
+"agi.infrastructure.api" = ["static/*", "static/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["."]
+pythonpath = ["src", "."]
 addopts = "-q"
+
+[tool.isort]
+line_length = 118
+multi_line_output = 0
+known_first_party = ["agi"]
+src_paths = ["src", "tests"]

@@ -2,11 +2,13 @@ import json
 
 import pytest
 
-from agi.collective import (AuditLog, Builder, Collective, LLMAgent, Ledger, PolicyTampered, Review,
-                            SafetyPolicy, SafetyReviewer, SpecReviewer, ToolForge, ToolNeed,
-                            ToolProposal)
-from agi.llm import ScriptedLLM
-from agi.sandbox import SandboxPolicy
+from agi.application.swarm.agents import Builder, LLMAgent, SafetyReviewer, SpecReviewer, ToolNeed
+from agi.application.swarm.collective import Collective
+from agi.application.swarm.forge import AuditLog, PolicyTampered, Review, ToolForge, ToolProposal
+from agi.application.swarm.ledger import Ledger
+from agi.application.swarm.policy import SafetyPolicy
+from agi.domain.value_objects.sandbox import SandboxPolicy
+from agi.infrastructure.adapters.llm.scripted import ScriptedLLM
 
 POLICY = SafetyPolicy(sandbox=SandboxPolicy(wall_time_s=2.0, cpu_time_s=1, memory_mb=256))
 MEAN = "def mean(xs):\n    return sum(xs) / len(xs)\n"
@@ -375,5 +377,5 @@ def test_llm_author_with_unusable_output_proposes_nothing():
 
 
 def _context():
-    from agi.collective import ReviewContext
+    from agi.application.swarm.forge import ReviewContext
     return ReviewContext(need=NEED_MEAN, prelude="", policy=POLICY)

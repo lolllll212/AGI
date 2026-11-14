@@ -77,9 +77,9 @@ three paths, and the engine moves up a path when the cheaper one fails.
 ```python
 import re, tempfile
 from agi import CognitiveEngine
-from agi.evaluation import write_fixtures
-from agi.memory import HierarchicalMemory
-from agi.tools import standard_tools
+from agi.eval.suite import write_fixtures
+from agi.application.memory.hierarchy import HierarchicalMemory
+from agi.infrastructure.adapters.execution.builtin import standard_tools
 
 def model(prompt):                                    # a stand-in for a real model
     task = prompt.rsplit("\n\nTask: ", 1)[-1]
@@ -137,8 +137,8 @@ steps were condensed.
 ```python
 import re
 from agi import CognitiveEngine, EngineConfig
-from agi.tools import Tool, ToolRegistry
-from agi.tools.base import Param
+from agi.domain.entities.tool import Tool, ToolRegistry
+from agi.domain.entities.tool import Param
 
 def read_page(number: int) -> str:                    # each page is about 900 tokens
     return f"page {number}: " + " ".join(f"entry{number}_{i} value {number * 1000 + i}" for i in range(150))
@@ -228,7 +228,7 @@ between sessions.
 | `procedural` | Tested code snippets, successful tool sequences, named workflows | Reliability tracked per use; snippets must pass their tests in the sandbox to be stored |
 
 ```python
-from agi.memory import HierarchicalMemory
+from agi.application.memory.hierarchy import HierarchicalMemory
 
 memory = HierarchicalMemory()                 # pass a directory to keep it between sessions
 
@@ -263,8 +263,10 @@ down) is the fifth store, `memory.lessons`.
 ## Tools that repair and extend themselves
 
 ```python
-from agi.core import Sandbox
-from agi.tools import SelfHealer, SemanticToolRouter, standard_tools, toolsmith_tools
+from agi.infrastructure.adapters.sandbox.process import Sandbox
+from agi.application.tools.healing import SelfHealer
+from agi.application.tools.router import SemanticToolRouter, toolsmith_tools
+from agi.infrastructure.adapters.execution.builtin import standard_tools
 
 sandbox = Sandbox()                                   # or best_sandbox(require="wasm") / "docker"
 tools = standard_tools(sandbox=sandbox)
@@ -312,8 +314,9 @@ print(healed.summary())   # self-healed after 1 repair(s): missing_import (NameE
   both tool matching and episodic memory.
 
 ```python
-from agi.memory import MemoryEngine
-from agi.tools import SemanticToolRouter, standard_tools
+from agi.application.memory.engine import MemoryEngine
+from agi.application.tools.router import SemanticToolRouter
+from agi.infrastructure.adapters.execution.builtin import standard_tools
 
 router = SemanticToolRouter(standard_tools(".", memory=MemoryEngine()))
 for request in ("How many days are left until the 1st of March?",
@@ -341,7 +344,10 @@ Starting the interpreter alone uses about 36 million units, so anything below
 ## Guardrails, tracing and failure handling
 
 ```python
-from agi.core import CircuitBreaker, CircuitOpen, Guardrails, Tracer
+from agi.application.cortex.guardrails import Guardrails
+from agi.application.cortex.resilience import CircuitBreaker
+from agi.domain.exceptions import CircuitOpen
+from agi.infrastructure.adapters.observability.tracing import Tracer
 
 guard = Guardrails(redact_pii=True)
 verdict = guard.check_input("Email jane@example.com the key sk-abcdefghijklmnopqrstuvwxyz123456")
@@ -392,7 +398,8 @@ Sending traces to an OpenTelemetry collector (OTLP over HTTP, JSON) needs no
 OpenTelemetry SDK:
 
 ```python
-from agi.core import OTLPExporter, Tracer
+from agi.infrastructure.adapters.observability.otlp import OTLPExporter
+from agi.infrastructure.adapters.observability.tracing import Tracer
 
 exporter = OTLPExporter("http://localhost:4318/v1/traces", headers={"X-Team": "agents"}, retries=0, timeout=2)
 tracer = Tracer(service="billing-agent", exporters=[exporter])    # or build_engine(..., otlp_endpoint=...)
@@ -412,8 +419,9 @@ failed batch is retried, then dropped and counted in `stats()`.
 ```python
 import tempfile
 from agi import CognitiveEngine
-from agi.evaluation import SUITE, DriftMonitor, Evaluator, reference_llm
-from agi.tools import standard_tools
+from agi.eval.evaluator import DriftMonitor, Evaluator
+from agi.eval.suite import SUITE, reference_llm
+from agi.infrastructure.adapters.execution.builtin import standard_tools
 
 def agent(workspace, task):                    # reference_llm replays each task's known-good solution
     return CognitiveEngine(reference_llm(task), standard_tools(workspace))
@@ -451,8 +459,9 @@ to the suite.
 
 ```python
 from agi import CognitiveEngine, EngineConfig
-from agi.evaluation import SUITE, Optimizer, add_instruction, reference_llm, set_field
-from agi.tools import standard_tools
+from agi.eval.optimizer import Optimizer, add_instruction, set_field
+from agi.eval.suite import SUITE, reference_llm
+from agi.infrastructure.adapters.execution.builtin import standard_tools
 
 TASKS = {t.name: t for t in SUITE}
 
@@ -499,8 +508,8 @@ none broken give p = 0.0625).
 
 ```python
 import asyncio, heapq
-from agi.core import Actor, MessageBus, Orchestrator
-from agi.reasoning import GraphOfThoughts
+from agi.application.swarm.orchestrator import Actor, MessageBus, Orchestrator
+from agi.application.reasoning.got import GraphOfThoughts
 
 async def main():
     bus = MessageBus(max_hops=8)               # a chain of messages longer than this is cut off
@@ -545,8 +554,9 @@ an optional drift monitor. `AgentServer` puts it behind HTTP or HTTPS.
 
 ```python
 import asyncio, json, tempfile, urllib.request
-from agi.api import AgentServer, AgentService
-from agi.evaluation import write_fixtures
+from agi.application.interfaces.service import AgentService
+from agi.infrastructure.api.server import AgentServer
+from agi.eval.suite import write_fixtures
 
 def model(prompt):                             # stand-in; use OpenAICompatLLM("model-name") for a real one
     return "Final Answer: I can only do arithmetic in this example."
@@ -590,7 +600,8 @@ token or keys.
 
 ```python
 import json, tempfile, urllib.request
-from agi.api import AgentServer, AgentService
+from agi.application.interfaces.service import AgentService
+from agi.infrastructure.api.server import AgentServer
 
 def model(prompt):                             # stand-in: answers with how many earlier turns it can see
     return f"Final Answer: I can see {prompt.count('User: ')} earlier turns."
@@ -624,11 +635,11 @@ does the model continue.
 
 ```python
 import json, tempfile
-from agi.evals import write_fixtures
-from agi.llm import ScriptedLLM
-from agi.memory import MemoryEngine
-from agi.react import ReActAgent
-from agi.tools import standard_tools
+from agi.eval.suite import write_fixtures
+from agi.infrastructure.adapters.llm.scripted import ScriptedLLM
+from agi.application.memory.engine import MemoryEngine
+from agi.application.cortex.react import ReActAgent
+from agi.infrastructure.adapters.execution.builtin import standard_tools
 
 workspace = write_fixtures(tempfile.mkdtemp())      # sample files: sales.csv, app.log, ...
 tools = standard_tools(workspace)                   # calculator, python, files, query_data, ...
@@ -680,7 +691,7 @@ Built-in tools (`standard_tools(workspace, memory=..., network=..., forge=...)`)
 Adding your own tool takes a function with type hints and a docstring:
 
 ```python
-from agi.tools import ToolRegistry
+from agi.domain.entities.tool import ToolRegistry
 
 registry = ToolRegistry()
 
@@ -707,7 +718,7 @@ policy to decide where to look first. Every candidate is still executed and
 verified, so a poor policy costs time, not correctness.
 
 ```python
-from agi.training import train_policy, make_tasks, compare
+from agi.training.policy import train_policy, make_tasks, compare
 
 policy, report = train_policy(tasks=4000, seed=0)      # about 2 seconds, pure Python
 print(report)
@@ -760,9 +771,9 @@ a filter: in the tests a stand-in that heeds it passes, one without the
 guardrail fails, and one that ignores the warning still fails.
 
 ```python
-from agi.evals import run_suite, reference_llm
-from agi.react import ReActAgent
-from agi.tools import standard_tools
+from agi.eval.suite import run_suite, reference_llm
+from agi.application.cortex.react import ReActAgent
+from agi.infrastructure.adapters.execution.builtin import standard_tools
 
 report = run_suite(lambda workspace, task: ReActAgent(reference_llm(task), standard_tools(workspace)))
 assert report.passed == 8          # the reference solutions: proves the suite is solvable with the tools
@@ -780,7 +791,8 @@ not grounded.
 learning something new cannot overwrite something old.
 
 ```python
-from agi.memory import MemoryEngine, Episode, Step, SUCCESS
+from agi.application.memory.engine import MemoryEngine
+from agi.domain.entities.memory import Episode, Step, SUCCESS
 
 memory = MemoryEngine()            # or MemoryEngine("agent.db") to persist across runs
 memory.record(Episode(
@@ -815,8 +827,10 @@ branch as soon as it is refuted. A result is reported as solved only when
 verification passed.
 
 ```python
-from agi.reasoning import MCTS, PipelineSynthesis, check_argument
-from agi.sandbox import Sandbox
+from agi.application.reasoning.logic import check_argument
+from agi.application.reasoning.mcts import MCTS
+from agi.application.reasoning.problems import PipelineSynthesis
+from agi.infrastructure.adapters.sandbox.process import Sandbox
 
 examples = [([3, 1, 2], 6), ([5, 4, 9, 1], 18), ([-2, -7], -4)]
 problem = PipelineSynthesis(examples, Sandbox())      # candidates run in the sandbox
@@ -840,7 +854,8 @@ counterexample for every invalid step.
 ## Learning from consequences
 
 ```python
-from agi.world import ProjectileWorld, WorldModel, GroundedAgent, ideal_range
+from agi.application.world.model import WorldModel, GroundedAgent
+from agi.application.world.physics import ProjectileWorld, ideal_range
 
 env = ProjectileWorld(drag=0.01, wind=-2.0)       # the real world has drag and wind
 model = WorldModel(env.bounds, prior=lambda a: ideal_range(a["angle"], a["speed"]))  # the textbook does not
@@ -863,7 +878,8 @@ Agents write Python tools for each other. A tool enters the shared registry only
 after five gates, and agents cannot change the rules of those gates.
 
 ```python
-from agi.collective import Collective, Builder, SpecReviewer, SafetyReviewer, ToolNeed
+from agi.application.swarm.agents import Builder, SpecReviewer, SafetyReviewer, ToolNeed
+from agi.application.swarm.collective import Collective
 
 need = ToolNeed("mean", "arithmetic mean of a list", ((([1, 2, 3],), 2.0), (([2, 3],), 2.5)))
 group = Collective([

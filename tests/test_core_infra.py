@@ -4,11 +4,11 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from agi.core.guardrails import Guardrails, Rule
-from agi.core.resilience import (BudgetExceeded, CircuitBreaker, CircuitOpen, LoopDetected, LoopDetector,
-                                 RateLimiter, StepBudget)
-from agi.core.tracing import Tracer, load_jsonl
-from agi.core.types import AgentConfig, EngineResult, Route, ToolCall, TraceEvent
+from agi.application.cortex.guardrails import Guardrails, Rule
+from agi.application.cortex.resilience import CircuitBreaker, LoopDetector, RateLimiter, StepBudget
+from agi.domain.exceptions import BudgetExceeded, CircuitOpen, LoopDetected
+from agi.domain.value_objects.records import AgentConfig, EngineResult, Route, ToolCall, TraceEvent
+from agi.infrastructure.adapters.observability.tracing import Tracer, load_jsonl
 
 
 class Clock:

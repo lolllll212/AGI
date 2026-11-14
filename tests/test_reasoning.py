@@ -3,11 +3,14 @@ import random
 
 import pytest
 
-from agi.llm import ScriptedLLM
-from agi.reasoning import (MCTS, CodeRepair, Game24, PipelineSynthesis, Problem, TreeOfThoughts,
-                           Verdict, check_argument, consistent, entails, eval_exact, satisfiable)
-from agi.reasoning.logic import LogicSyntaxError, parse
-from agi.sandbox import Sandbox, SandboxPolicy
+from agi.application.reasoning.logic import LogicSyntaxError, check_argument, consistent, entails, parse, satisfiable
+from agi.application.reasoning.mcts import MCTS
+from agi.application.reasoning.problems import CodeRepair, Game24, PipelineSynthesis, eval_exact
+from agi.application.reasoning.tot import TreeOfThoughts
+from agi.domain.entities.problem import Problem, Verdict
+from agi.domain.value_objects.sandbox import SandboxPolicy
+from agi.infrastructure.adapters.llm.scripted import ScriptedLLM
+from agi.infrastructure.adapters.sandbox.process import Sandbox
 
 
 # ------------------------------------------------------------------ logic --- #

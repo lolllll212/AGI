@@ -3,9 +3,10 @@ import random
 
 import pytest
 
-from agi.world import (Body, CausalLearner, CodeWorld, FunctionWorld, GroundedAgent,
-                       LocalRegressor, PhysicsWorld, ProjectileWorld, SCMWorld, WorldModel,
-                       ideal_range, pearson)
+from agi.application.world.causal import CausalLearner, SCMWorld, pearson
+from agi.application.world.env import CodeWorld, FunctionWorld
+from agi.application.world.model import GroundedAgent, LocalRegressor, WorldModel
+from agi.application.world.physics import Body, PhysicsWorld, ProjectileWorld, ideal_range
 
 
 # ---------------------------------------------------------------- physics --- #

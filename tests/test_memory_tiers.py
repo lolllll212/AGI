@@ -1,9 +1,13 @@
 import pytest
 
-from agi.core.sandbox import Sandbox
-from agi.memory import (CycleError, EpisodicStore, HierarchicalMemory, ProceduralMemory, SemanticGraph,
-                        WorkingMemory, align, estimate_tokens, extract_triples, make_index, render_answer)
-from agi.memory import vector as vector_module
+import agi.infrastructure.adapters.persistence.episodic as vector_module
+from agi.application.memory.hierarchy import HierarchicalMemory
+from agi.application.memory.working import WorkingMemory, estimate_tokens
+from agi.domain.services.text import render_answer
+from agi.infrastructure.adapters.persistence.episodic import EpisodicStore, make_index
+from agi.infrastructure.adapters.persistence.procedural import ProceduralMemory, align
+from agi.infrastructure.adapters.persistence.semantic import CycleError, SemanticGraph, extract_triples
+from agi.infrastructure.adapters.sandbox.process import Sandbox
 
 
 class Clock:

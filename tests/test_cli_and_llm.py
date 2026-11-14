@@ -6,8 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from agi.__main__ import DEMOS, main
-from agi.llm import OpenAICompatLLM, ScriptedLLM, extract_code, extract_json
+from agi.domain.services.text import extract_code, extract_json
+from agi.infrastructure.adapters.llm.openai_compat import OpenAICompatLLM
+from agi.infrastructure.adapters.llm.scripted import ScriptedLLM
+from agi.infrastructure.cli.main import DEMOS, main
 
 README = Path(__file__).resolve().parents[1] / "README.md"
 

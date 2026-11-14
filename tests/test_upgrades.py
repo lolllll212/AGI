@@ -6,13 +6,12 @@ import re
 
 import pytest
 
-from agi.api import AgentService
-from agi.core.engine import CognitiveEngine, EngineConfig
-from agi.core.llm import ScriptedLLM
-from agi.core.react import ReActAgent
-from agi.memory.working import WorkingMemory
-from agi.tools import Tool, ToolRegistry
-from agi.tools.base import Param
+from agi.application.cortex.engine import CognitiveEngine, EngineConfig
+from agi.application.cortex.react import ReActAgent
+from agi.application.interfaces.service import AgentService
+from agi.application.memory.working import WorkingMemory
+from agi.domain.entities.tool import Param, Tool, ToolRegistry
+from agi.infrastructure.adapters.llm.scripted import ScriptedLLM
 
 
 # ------------------------------------------------- context window in the loop --- #
@@ -120,8 +119,8 @@ def test_long_sessions_are_condensed_not_cut():
 
 
 # ------------------------------------------------------------ learned routing --- #
-from agi.core.router import RouteLearner, Router, RouterConfig          # noqa: E402
-from agi.memory import HierarchicalMemory                               # noqa: E402
+from agi.application.cortex.router import RouteLearner, Router, RouterConfig  # noqa: E402
+from agi.application.memory.hierarchy import HierarchicalMemory  # noqa: E402
 
 PLAN = json.dumps({"plans": [{"steps": ["inspect what changed before the crash", "state the cause"], "tools": []}]})
 
@@ -254,11 +253,12 @@ def test_a_model_outage_does_not_teach_the_router_anything():
     assert engine.router.learner.observations == 0
 
 
+from agi.application.memory.engine import MemoryEngine  # noqa: E402
+from agi.application.tools.router import SemanticToolRouter  # noqa: E402
+from agi.domain.services.embedding import ConceptEmbedder, HashingEmbedder, cosine  # noqa: E402
+from agi.infrastructure.adapters.execution.builtin import standard_tools
 # ------------------------------------------------------------ concept matching --- #
-from agi.api import build_engine                                        # noqa: E402
-from agi.memory import MemoryEngine                                     # noqa: E402
-from agi.memory.embed import ConceptEmbedder, HashingEmbedder, cosine   # noqa: E402
-from agi.tools import SemanticToolRouter, standard_tools                # noqa: E402
+from agi.infrastructure.di.container import build_engine  # noqa: E402
 
 REQUESTS = [  # the same needs in a user's words, which rarely repeat the tool's description
     ("How many days are left until the 1st of March?", "current_time"),
@@ -342,10 +342,11 @@ def test_an_embedding_model_can_be_plugged_into_tools_and_memory(tmp_path):
 
 
 # --------------------------------------------------------------- trace export --- #
-import threading                                                        # noqa: E402
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer     # noqa: E402
+import threading  # noqa: E402
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer  # noqa: E402
 
-from agi.core.tracing import OTLPExporter, Tracer, otlp_payload         # noqa: E402
+from agi.infrastructure.adapters.observability.otlp import OTLPExporter, otlp_payload  # noqa: E402
+from agi.infrastructure.adapters.observability.tracing import Tracer
 
 
 class Collector:
@@ -466,17 +467,18 @@ def test_the_service_exports_traces_and_reports_on_it():
 
 
 # ------------------------------------------------------- the hardened server --- #
-import shutil                                                           # noqa: E402
-import socket                                                           # noqa: E402
-import ssl                                                              # noqa: E402
-import subprocess                                                       # noqa: E402
-import time                                                             # noqa: E402
-import urllib.error                                                     # noqa: E402
-import urllib.request                                                   # noqa: E402
-import warnings                                                         # noqa: E402
+import shutil  # noqa: E402
+import socket  # noqa: E402
+import ssl  # noqa: E402
+import subprocess  # noqa: E402
+import time  # noqa: E402
+import urllib.error  # noqa: E402
+import urllib.request  # noqa: E402
+import warnings  # noqa: E402
 
-from agi.api import AgentServer, SessionStore                           # noqa: E402
-from agi.core.resilience import RateLimiter                             # noqa: E402
+from agi.application.cortex.resilience import RateLimiter  # noqa: E402
+from agi.infrastructure.adapters.persistence.sessions import SessionStore  # noqa: E402
+from agi.infrastructure.api.server import AgentServer
 
 ALICE, BOB = "alice-key-0123456789abcdef", "bob-key-0123456789abcdef"
 
@@ -685,10 +687,13 @@ def test_conversations_survive_a_restart(tmp_path):
     store.close()
 
 
+import agi.eval.extended as truth  # noqa: E402
+from agi.eval import FULL_SUITE  # noqa: E402
+from agi.eval.evaluator import Evaluator
+from agi.eval.extended import EXTENDED
+from agi.eval.suite import SUITE, reference_llm, run_suite
 # ------------------------------------------------------ the extended benchmark --- #
-from agi.__main__ import main as cli                                    # noqa: E402
-from agi.evaluation import EXTENDED, FULL_SUITE, SUITE, Evaluator, reference_llm, run_suite     # noqa: E402
-from agi.evaluation import extended as truth                            # noqa: E402
+from agi.infrastructure.cli.main import main as cli  # noqa: E402
 
 BY_NAME = {task.name: task for task in EXTENDED}
 
@@ -734,7 +739,7 @@ def test_plausible_wrong_answers_fail(task, wrong, tmp_path):
 
 
 def test_file_tasks_check_the_file_not_the_claim(tmp_path):
-    from agi.evaluation import write_fixtures
+    from agi.eval.suite import write_fixtures
     workspace = write_fixtures(tmp_path)
     retries, top = BY_NAME["lower_retries"], BY_NAME["top_orders_file"]
     assert not retries.check("Done, saved it.", workspace) and not top.check("Done, saved it.", workspace)

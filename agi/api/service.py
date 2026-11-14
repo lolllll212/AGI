@@ -84,8 +84,10 @@ def build_engine(llm: Callable[[str], str] | None = None, workspace: str | Path 
         tools.extend(toolsmith_tools(tools, sandbox))
     for tool in extra_tools:
         tools.register(tool, replace=True)
-    return CognitiveEngine(llm, tools, memory=memory, guardrails=guardrails, tracer=tracer,
-                           config=config, healer=healer, embed=embed)
+    engine = CognitiveEngine(llm, tools, memory=memory, guardrails=guardrails, tracer=tracer,
+                             config=config, healer=healer, embed=embed)
+    engine.sandbox = sandbox                               # so callers can warm it up or inspect its isolation
+    return engine
 
 
 class SessionStore:

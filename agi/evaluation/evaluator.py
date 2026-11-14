@@ -194,7 +194,7 @@ class Evaluator:
         for task in (self.tasks if tasks is None else tasks):
             for _ in range(self.repeats):
                 with tempfile.TemporaryDirectory(dir=self.workdir) as scratch:
-                    workspace = write_fixtures(Path(scratch) / "workspace")
+                    workspace = write_fixtures(Path(scratch) / "workspace", getattr(task, "files", None))
                     started = time.perf_counter()
                     try:
                         run = build(workspace, task).run(task.prompt, check=lambda a, w=workspace: task.check(a, w))

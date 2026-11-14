@@ -173,6 +173,7 @@ class CognitiveEngine:
             if self.config.router.learn_routes else None
         self.router = Router(self.tools, getattr(memory, "procedural", None), getattr(memory, "episodic", None),
                              self.config.router, evaluate=evaluate, learner=learner)
+        self.sandbox = None                                 # set by build_engine: where code tools run
         self.tool_router = SemanticToolRouter(
             self.tools, embed=embed, always=[n for n in ("list_tools", "find_tools") if n in self.tools])
         self.breaker = breaker or CircuitBreaker(failure_threshold=4, reset_after=30.0, name="model")

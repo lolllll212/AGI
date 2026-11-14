@@ -72,11 +72,14 @@ FIXTURES = {"sales.csv": SALES, "customers.csv": CUSTOMERS, "orders.csv": ORDERS
             "config.json": json.dumps(CONFIG, indent=2) + "\n"}
 
 
-def write_fixtures(directory: str | Path) -> Path:
+def write_fixtures(directory: str | Path, extra: dict[str, str] | None = None) -> Path:
+    """Write the shared fixture files, plus a task's own ``extra`` files, into ``directory``."""
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
-    for name, text in FIXTURES.items():
-        (directory / name).write_text(text, encoding="utf-8")
+    for name, text in {**FIXTURES, **(extra or {})}.items():
+        target = directory / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
     return directory
 
 
@@ -116,6 +119,7 @@ class EvalTask:
     reference: list[tuple[str, dict]] = field(default_factory=list)
     conclude: Callable[[list[str]], str] = lambda observations: observations[-1]
     skill: str = ""
+    files: dict[str, str] = field(default_factory=dict)     # extra workspace files this task needs
 
 
 def _last_number(text: str) -> str:
@@ -260,7 +264,7 @@ def run_suite(make_agent: Callable[[Path, EvalTask], ReActAgent],
     results = []
     for task in tasks:
         with tempfile.TemporaryDirectory(dir=workdir) as scratch:
-            workspace = write_fixtures(Path(scratch) / "workspace")
+            workspace = write_fixtures(Path(scratch) / "workspace", task.files)
             agent = make_agent(workspace, task)
             run = agent.run(task.prompt, check=lambda answer: task.check(answer, workspace))
             results.append(EvalResult(task.name, bool(run.success), run))

@@ -16,6 +16,7 @@ With a model (any OpenAI-compatible endpoint; the key is read from the environme
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import tempfile
@@ -503,6 +504,16 @@ def _command(name: str, argv: list[str]) -> int:
         parser.add_argument("--state", help="directory for the agent's long-term memory (default: in RAM)")
         parser.add_argument("--sandbox", default="process", choices=("process", "wasm", "docker", "auto"))
         parser.add_argument("--traces", help="append every trace event to this JSONL file")
+        parser.add_argument("--otlp-endpoint", help="send traces to an OpenTelemetry collector, "
+                                                    "e.g. http://localhost:4318/v1/traces")
+        parser.add_argument("--keys-file", help='JSON file of per-caller keys: {"alice": "<secret>", ...}; '
+                                                "each caller gets their own rate limit and sessions")
+        parser.add_argument("--tls-cert", help="PEM certificate: serve HTTPS instead of HTTP")
+        parser.add_argument("--tls-key", help="PEM private key for --tls-cert")
+        parser.add_argument("--rate-limit", type=float, help="requests per second allowed per caller")
+        parser.add_argument("--max-connections", type=int, default=64)
+        parser.add_argument("--context-tokens", type=int, default=6000,
+                            help="size of the working context kept per run (0 = unlimited)")
         options = parser.parse_args(argv)
         if not options.model:
             parser.error("--model is required (no model is bundled with this package)")
@@ -512,12 +523,24 @@ def _command(name: str, argv: list[str]) -> int:
         llm = OpenAICompatLLM(options.model, options.base_url, os.environ.get(options.api_key_env, ""),
                               stop=["\nObservation:"])
         try:
+            keys = None
+            if options.keys_file:
+                with open(options.keys_file, encoding="utf-8") as handle:
+                    keys = json.load(handle)
+                if not isinstance(keys, dict) or not all(isinstance(v, str) for v in keys.values()):
+                    parser.error("--keys-file must contain a JSON object of name -> secret")
             service = AgentService.create(
                 llm, workspace=options.workspace, memory_dir=options.state, sandbox=options.sandbox,
                 network=options.network, read_only=options.read_only, trace_path=options.traces,
-                config=EngineConfig(max_steps=options.max_steps))
-            serve(service, options.host, options.port, os.environ.get(options.token_env) or None)
-        except (ValueError, RuntimeError) as exc:
+                otlp_endpoint=options.otlp_endpoint,
+                config=EngineConfig(max_steps=options.max_steps, context_tokens=options.context_tokens))
+            if options.sandbox in ("wasm", "auto") and hasattr(service.engine.sandbox, "warm_up"):
+                print("preparing the WebAssembly sandbox (about a minute the first time) ...", flush=True)
+                service.engine.sandbox.warm_up()
+            serve(service, options.host, options.port, os.environ.get(options.token_env) or None,
+                  options.rate_limit, keys=keys, certfile=options.tls_cert, keyfile=options.tls_key,
+                  max_connections=options.max_connections)
+        except (ValueError, RuntimeError, OSError) as exc:
             parser.error(str(exc))
         return 0
     if name == "run":
@@ -526,15 +549,18 @@ def _command(name: str, argv: list[str]) -> int:
         parser.add_argument("--reference", action="store_true",
                             help="replay the reference solutions instead of calling a model")
         parser.add_argument("--export", help="write passed runs as fine-tuning JSONL to this file")
+        parser.add_argument("--extended", action="store_true",
+                            help="run all 24 tasks (the 8 core ones plus 16 harder ones) instead of the core 8")
     options = parser.parse_args(argv)
 
     if name == "eval":
-        from .evaluation.suite import reference_llm, run_suite
+        from .evaluation import FULL_SUITE, SUITE, reference_llm, run_suite
         if not options.model and not options.reference:
             parser.error("give --model MODEL to score a model, or --reference to check the suite itself")
         options.quiet = True
         report = run_suite(lambda ws, task: _build_agent(
-            options, ws, llm=reference_llm(task) if options.reference else None))
+            options, ws, llm=reference_llm(task) if options.reference else None),
+            FULL_SUITE if options.extended else SUITE)
         print(report)
         if options.export:
             from .training import export_jsonl

@@ -33,9 +33,24 @@ ERROR_HINTS = {
     "AssertionError": "the output did not match the specification; re-read the expected behaviour",
     "TestFailed": "the output did not match the specification; re-read the expected behaviour",
     "TypeMismatch": "the result has the wrong type for this task; end on a step that produces the right type",
+    # tool-use failures (agi.tools / agi.react)
+    "FileNotFound": "list the files first and use the exact name",
+    "PermissionDenied": "stay inside the workspace; that location is off limits",
+    "SQLError": "inspect the table's columns (query_data without sql) before writing the query",
+    "OnlySelect": "the data tool is read-only; use SELECT",
+    "BadArguments": "check the tool's signature and pass exactly those arguments",
+    "UnknownTool": "use only the tools that are listed",
+    "RepeatedCall": "an identical call gives an identical result; change the call or answer",
+    "UrlBlocked": "that address may not be fetched; use a public http(s) URL",
+    "HTTPError": "the server refused; check the URL, slow down or try another source",
+    "NetworkError": "the network call failed; retry once or use another source",
+    "BudgetExceeded": "plan the calls; the tool budget is limited",
+    "MaxSteps": "the step limit ran out; take a more direct route to the answer",
+    "WrongAnswer": "the answer was wrong or unsupported; get every figure from a tool result",
 }
 
-_TYPE = re.compile(r"^\s*([A-Z][A-Za-z]*(?:Error|Exception|Violation|Failed|Limit|Mismatch)|Timeout)\b:?\s*(.*)$", re.S)
+_TYPE = re.compile(r"^\s*((?:[A-Z][a-z0-9]+){2,}(?=:)|[A-Z][A-Za-z]*(?:Error|Exception|Violation|Failed|Limit|Mismatch)"
+                   r"|Timeout)\b:?\s*(.*)$", re.S)
 
 
 def error_signature(error: str | None) -> tuple[str, str]:
@@ -79,7 +94,11 @@ class HeuristicExtractor:
             if step.action not in group["failed"]:
                 group["failed"].append(step.action)
             if group["worked"] is None:
-                group["worked"] = next((s.action for s in episode.steps[index + 1:] if s.ok), None)
+                later = [s.action for s in episode.steps[index + 1:] if s.ok]
+                tool = step.action.split("(", 1)[0]
+                # Prefer the step that fixed *this* call (same tool) over whatever succeeded next.
+                group["worked"] = next((a for a in later if "(" in a and a.split("(", 1)[0] == tool),
+                                       later[0] if later else None)
 
         if not groups and episode.outcome == FAILURE and episode.error:
             groups[error_signature(episode.error)] = {"failed": [], "worked": None}

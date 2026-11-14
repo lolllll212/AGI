@@ -26,7 +26,9 @@ CREATE INDEX IF NOT EXISTS edges_dst ON edges(dst);
 class KnowledgeGraph:
     def __init__(self, path: str = ":memory:"):
         self.path = path
-        self.db = sqlite3.connect(path)
+        # The engine serialises access with a lock, so the connection may be shared
+        # between threads (agent tools run in worker threads).
+        self.db = sqlite3.connect(path, check_same_thread=False)
         if path != ":memory:":
             self.db.execute("PRAGMA journal_mode=WAL")
             self.db.execute("PRAGMA synchronous=NORMAL")

@@ -1,7 +1,9 @@
 """Episodic memory: record -> distil -> link -> recall -> reinforce -> consolidate."""
 from __future__ import annotations
 
+import functools
 import math
+import threading
 import time
 from dataclasses import dataclass
 from typing import Iterable
@@ -10,6 +12,15 @@ from .embed import HashingEmbedder, cosine, keywords, tokens
 from .extract import HeuristicExtractor, LessonExtractor
 from .graph import KnowledgeGraph
 from .models import Episode, Lesson
+
+
+def _locked(method):
+    """Serialise a public method: tools may call the engine from worker threads."""
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return wrapper
 
 
 @dataclass
@@ -44,6 +55,7 @@ class MemoryEngine:
         self.merge_threshold = merge_threshold
         self.min_relevance = min_relevance
         self._vectors: dict[str, tuple[str, dict]] = {}
+        self._lock = threading.RLock()
 
     def __enter__(self) -> "MemoryEngine":
         return self
@@ -51,10 +63,12 @@ class MemoryEngine:
     def __exit__(self, *exc) -> None:
         self.close()
 
+    @_locked
     def close(self) -> None:
         self.graph.close()
 
     # -- write path --------------------------------------------------------- #
+    @_locked
     def record(self, episode: Episode) -> list[Lesson]:
         """Store an episode and return the lessons it produced (after merging)."""
         self.graph.put(episode.id, "episode", episode.task[:80], episode.to_dict())
@@ -65,6 +79,7 @@ class MemoryEngine:
                     self.graph.link(a, "co_occurs", b, 0.25)
         return [self.learn(lesson, episode.id) for lesson in self.extractor.extract(episode)]
 
+    @_locked
     def learn(self, lesson: Lesson, episode_id: str | None = None) -> Lesson:
         """Add one lesson directly, merging it into an equivalent one if present."""
         existing = self._equivalent(lesson)
@@ -95,6 +110,7 @@ class MemoryEngine:
             keeper.payload["worked"] = other.payload.get("worked")
         return keeper
 
+    @_locked
     def feedback(self, lesson_id: str, helped: bool) -> None:
         """Tell memory whether a retrieved lesson actually helped."""
         lesson = self.get(lesson_id)
@@ -106,11 +122,13 @@ class MemoryEngine:
             lesson.hurt += 1
         self._save(lesson)
 
+    @_locked
     def forget(self, lesson_id: str) -> None:
         self.graph.delete(lesson_id)
         self._vectors.pop(lesson_id, None)
 
     # -- read path ---------------------------------------------------------- #
+    @_locked
     def recall(self, query: str, tags: Iterable[str] = (), k: int = 5,
                kinds: Iterable[str] | None = None, touch: bool = True) -> list[Recall]:
         """The ``k`` most relevant lessons for ``query``; empty if nothing is relevant."""
@@ -138,6 +156,7 @@ class MemoryEngine:
                 self._save(hit.lesson)
         return hits
 
+    @_locked
     def context(self, query: str, tags: Iterable[str] = (), k: int = 5) -> str:
         """Recalled lessons formatted as a block to prepend to a model prompt."""
         hits = self.recall(query, tags, k)
@@ -149,16 +168,20 @@ class MemoryEngine:
             lines.append(f"{i}. {l.render()} (seen {l.support}x, utility {l.utility:.2f})")
         return "\n".join(lines)
 
+    @_locked
     def get(self, lesson_id: str) -> Lesson | None:
         node = self.graph.get(lesson_id)
         return Lesson.from_dict(node["data"]) if node and node["kind"] == "lesson" else None
 
+    @_locked
     def lessons(self) -> list[Lesson]:
         return [Lesson.from_dict(n["data"]) for n in self.graph.nodes("lesson")]
 
+    @_locked
     def episodes(self) -> list[dict]:
         return [n["data"] for n in self.graph.nodes("episode")]
 
+    @_locked
     def stats(self) -> dict:
         info = self.graph.stats()
         return {"episodes": info["nodes"].get("episode", 0), "lessons": info["nodes"].get("lesson", 0),
@@ -166,6 +189,7 @@ class MemoryEngine:
                 "edges": info["edges"]}
 
     # -- maintenance -------------------------------------------------------- #
+    @_locked
     def consolidate(self, keep_traces: int = 50, retire_below: float = 0.3,
                     min_trials: int = 4) -> dict:
         """Compress memory. Nothing is silently lost: weak lessons are retired, not deleted."""

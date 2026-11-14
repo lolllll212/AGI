@@ -46,8 +46,11 @@ class Attempt:
 
 class LearningAgent:
     def __init__(self, memory: MemoryEngine, sandbox: Sandbox | None = None,
-                 budget: int = 3000, seed: int = 0):
+                 budget: int = 3000, seed: int = 0, policy=None):
+        """``policy`` is an optional trained :class:`agi.training.SearchPolicy`. It guides
+        the search, and takes a few gradient steps on every task the agent solves."""
         self.memory, self.sandbox, self.budget, self.seed = memory, sandbox, budget, seed
+        self.policy = policy
 
     def solve(self, task: Task) -> Attempt:
         started = time.perf_counter()
@@ -70,7 +73,8 @@ class LearningAgent:
                 if payload.get("error_type") != "TypeMismatch" and ops and ops[0]:
                     avoid.add((ops[-2] if len(ops) > 1 else None, ops[-1]))
 
-        problem = PipelineSynthesis(task.examples, self.sandbox, priors=priors, avoid=avoid)
+        problem = PipelineSynthesis(task.examples, self.sandbox, priors=priors, avoid=avoid,
+                                    policy=self.policy)
         known = [(lesson, program) for lesson, program in remembered
                  if all(op in problem.ops for op in program)]
         verifications = refuted = 0
@@ -93,6 +97,8 @@ class LearningAgent:
             if result.solved:
                 program = result.best_state
                 how = "guided search" if priors else "search"
+        if program is not None and self.policy is not None:
+            self.policy.update(task.examples, program)       # training: learn from what worked
 
         # 4. Write the experience back, then tell memory which lessons earned their keep.
         steps = [Step(problem.describe(p), ok=False, error=e) for p, e in problem.failures[:40]]

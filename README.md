@@ -1,19 +1,23 @@
 # AGI
 
-Four building blocks for agents that are more capable and easier to trust, in one
-small Python package. Each one targets a known weakness of today's models:
+Building blocks for agents that are more capable and easier to trust, in one
+Python package with no heavy dependencies.
 
-| Pillar | Weakness it targets | Module |
+| Part | What it does | Module |
 | --- | --- | --- |
-| 1. Continual learning and episodic memory | Forgetting; repeating the same mistakes | `agi.memory` |
-| 2. System 2 reasoning and self-verification | Hallucinated answers nobody checked | `agi.reasoning` |
-| 3. Grounded world models and causal reasoning | Beliefs that never meet reality | `agi.world` |
-| 4. Safe self-improvement and multi-agent consensus | Agents changing themselves unchecked | `agi.collective` |
+| Tools | Typed, logged tools for files, tabular data, HTTP, arithmetic, sandboxed Python and memory | `agi.tools` |
+| ReAct loop | Reason, act with a tool, read the real result, repeat; challenges unsupported answers | `agi.react` |
+| Memory | Turns past failures into lessons in a knowledge graph and recalls them for new tasks | `agi.memory` |
+| Reasoning | MCTS and Tree-of-Thoughts over hypotheses that are executed and verified | `agi.reasoning` |
+| Training | A search policy trained by gradient descent; fine-tuning data exported from agent runs | `agi.training` |
+| Evaluation | Eight real-world tasks checked against independently computed answers | `agi.evals` |
+| World models | Learns from the consequences of actions; causal discovery by intervention | `agi.world` |
+| Self-improvement | Agents write tools for each other under consensus, a sandbox and fixed safety rules | `agi.collective` |
 
-This is not an AGI, and nothing here trains or contains a model. It is the
-machinery around a model: memory, search, verification, grounding and
-governance. Everything runs offline and deterministically; a language model plugs
-in through one seam (`agi.llm`).
+This is not an AGI and it does not contain a language model. It is the machinery
+around one: tools, a control loop, memory, search, verification, training and
+governance. Everything runs offline with deterministic stand-ins; a real model
+plugs in through one seam (`agi.llm`).
 
 ## Quick start
 
@@ -23,16 +27,159 @@ Linux only. The only runtime dependency is
 
 ```bash
 pip install -e ".[test]"
-python -m agi          # runs all five demos, about 30 seconds
-python -m agi agent    # or one of: memory, reasoning, world, collective, agent
-pytest                 # 180 tests, under a minute
+python -m agi                 # all seven demos, about 35 seconds, no model needed
+python -m agi react training  # or pick: memory reasoning world collective agent react training
+pytest                        # 337 tests, about a minute
 ```
 
-## 1. Memory that learns from failure: `agi.memory`
+With a model, from any OpenAI-compatible endpoint (OpenAI, Ollama, vLLM, LM
+Studio, OpenRouter and others). The API key is read from the environment:
 
-`MemoryEngine` turns an agent's past episodes into lessons, stores them in a
-knowledge graph (SQLite), and retrieves the relevant ones for a new task. No
-weights are retrained, so learning something new cannot overwrite something old.
+```bash
+export OPENAI_API_KEY=...
+python -m agi run "Which region sold the most in sales.csv?" --model gpt-4o-mini --workspace ./data
+python -m agi chat --model llama3.1 --base-url http://localhost:11434/v1 --workspace ./data --memory agent.db
+python -m agi eval --model gpt-4o-mini       # score the model on the eight benchmark tasks
+python -m agi train --out policy.json        # train the search policy
+```
+
+## Tools and the ReAct loop
+
+`ReActAgent` drives a model through reason, act, observe. The model proposes one
+tool call; the runtime executes it and reports what really happened; only then
+does the model continue.
+
+```python
+import json, tempfile
+from agi.evals import write_fixtures
+from agi.llm import ScriptedLLM
+from agi.memory import MemoryEngine
+from agi.react import ReActAgent
+from agi.tools import standard_tools
+
+workspace = write_fixtures(tempfile.mkdtemp())      # sample files: sales.csv, app.log, ...
+tools = standard_tools(workspace)                   # calculator, python, files, query_data, ...
+sql = "select sum(amount) from data where region = 'North'"
+model = ScriptedLLM([                               # a scripted stand-in for a real model
+    f'Thought: query it\nAction: query_data\nAction Input: {json.dumps({"file": "sale.csv", "sql": sql})}',
+    f'Thought: wrong name\nAction: query_data\nAction Input: {json.dumps({"file": "sales.csv", "sql": sql})}',
+    "Thought: I have it\nFinal Answer: North sold about 3,100.",
+    "Thought: use the observed figure\nFinal Answer: North sold 3,090.75.",
+])
+agent = ReActAgent(model, tools, memory=MemoryEngine())
+run = agent.run("What is the total sales amount for the North region in sales.csv?")
+
+print(run)                        # answered: 'North sold 3,090.75.'  [2 tool calls, 1 errors, 4 model calls, grounded]
+print(run.steps[0].observation)   # FileNotFound: no file 'sale.csv' in the workspace. Files present: ...
+print(run.steps[2].observation)   # [verifier] The figure(s) 3100 in your answer do not appear in ... any observation
+```
+
+Replace `ScriptedLLM([...])` with `OpenAICompatLLM("model-name")` to use a real model.
+
+What the loop enforces:
+
+- **No imagined results.** Anything a model writes after its action, such as an
+  invented `Observation:` or a premature answer, is discarded.
+- **Errors are information.** A failed call comes back as an observation with a
+  specific message (a missing file lists the files that exist; a bad SQL query
+  shows the table's columns).
+- **Answers must be grounded.** A final answer containing a number that appears
+  in no tool result is challenged once. `run.grounded` reports the outcome.
+- **Bounded.** Step limit, repeated-call detection, a cap on unusable replies,
+  and shortening of old observations when the context fills up.
+- **Memory in the loop.** Relevant lessons are placed in the prompt; every run is
+  recorded as an episode; a failed call followed by a working one becomes a
+  lesson for next time.
+
+Built-in tools (`standard_tools(workspace, memory=..., network=..., forge=...)`):
+
+| Tool | Notes |
+| --- | --- |
+| `calculator` | Exact integer and rational arithmetic; no `eval` |
+| `python` | Runs in the sandbox: no files, no network, limited imports |
+| `list_files`, `read_file`, `search_files`, `write_file` | Confined to the workspace directory, symlinks included; `read_only=True` removes writing |
+| `query_data` | SQL (SELECT only) over CSV and JSON files; parses `"1,200.50"` and `$40` as numbers; joins several files |
+| `http_get` | Off unless `network=True`; refuses loopback, private and link-local addresses; optional host allowlist |
+| `current_time` | So the model does not assume the date |
+| `remember`, `recall` | Long-term facts, when a `MemoryEngine` is given |
+| forged tools | Tools approved by the agent collective (see below), still sandboxed |
+
+Adding your own tool takes a function with type hints and a docstring:
+
+```python
+from agi.tools import ToolRegistry
+
+registry = ToolRegistry()
+
+@registry.tool
+def word_count(text: str) -> int:
+    """Count the words in a piece of text.
+
+    text: the text to count
+    """
+    return len(text.split())
+
+assert registry.call("word_count", {"text": "to be or not to be"}).value == 6
+assert registry.call("word_count", {}).output.startswith("BadArguments: missing required argument 'text'")
+```
+
+## Training
+
+Two kinds, both in `agi.training`.
+
+**A trained search policy.** `train_policy` generates random programs, runs them
+to get exact input/output examples, and fits a softmax policy by stochastic
+gradient descent to predict the next operation. Program search then uses the
+policy to decide where to look first. Every candidate is still executed and
+verified, so a poor policy costs time, not correctness.
+
+```python
+from agi.training import train_policy, make_tasks, compare
+
+policy, report = train_policy(tasks=4000, seed=0)      # about 2 seconds, pure Python
+print(report)
+# 4000 dreamed tasks, 10000 samples; loss 1.685 -> 1.284;
+# held-out next-step accuracy 11% -> 58% (top-3 80%)
+
+unseen = make_tasks(30, seed=1003, lengths=(4,), minimal=True)    # 4-step tasks it never saw
+print(compare(policy, unseen, budget=1500))
+# solved 18/30 -> 30/30 within 1500 verifications; mean programs executed 905.5 -> 214.1
+```
+
+`LearningAgent(memory, policy=policy)` uses the policy and takes further gradient
+steps on each task it solves. `policy.save(path)` and `SearchPolicy.load(path)`
+persist it.
+
+**Fine-tuning data for your model.** `export_jsonl(runs, path)` writes ReAct runs
+as chat-format JSONL for OpenAI-style fine-tuning. By default only runs that
+succeeded with a grounded answer are exported. This package does not fine-tune a
+language model itself.
+
+## Evaluation
+
+`agi.evals` holds eight tasks over sample files: compound interest, a group-by,
+a two-file join, log analysis, date arithmetic, read-then-compute, writing a
+report file, and one question the data cannot answer (the correct response is to
+say so). Each is checked against a value computed independently in plain Python.
+
+```python
+from agi.evals import run_suite, reference_llm
+from agi.react import ReActAgent
+from agi.tools import standard_tools
+
+report = run_suite(lambda workspace, task: ReActAgent(reference_llm(task), standard_tools(workspace)))
+assert report.passed == 8          # the reference solutions: proves the suite is solvable with the tools
+```
+
+Pass your own model in place of `reference_llm(task)`, or run
+`python -m agi eval --model MODEL`. A stand-in that answers from imagination
+scores 0 of 8, with all eight answers flagged as not grounded.
+
+## Memory
+
+`MemoryEngine` extracts lessons from episodes, stores them in a knowledge graph
+(SQLite) and retrieves the relevant ones for a new task. No weights change, so
+learning something new cannot overwrite something old.
 
 ```python
 from agi.memory import MemoryEngine, Episode, Step, SUCCESS
@@ -52,23 +199,22 @@ print(memory.context("Load a CSV of payments and sum the amount column", tags=("
 assert memory.context("write a haiku about autumn") == ""    # unrelated tasks recall nothing
 ```
 
-- **Extraction.** A failed step followed by a step that worked becomes a `fix`
-  lesson; an unrecovered failure becomes an `avoid` lesson; a verified solution
-  becomes a `procedure`. `LLMExtractor` lets a model write the lessons and falls
-  back to the heuristics when its output is unusable.
-- **Compression.** The same error seen in related tasks merges into one lesson
-  with a support count. `consolidate()` merges duplicates, drops old raw traces
-  and retires lessons that keep failing to help.
+- **Extraction.** A failed step followed by one that worked becomes a `fix`
+  lesson; an unrecovered failure becomes `avoid`; a verified solution becomes a
+  `procedure`. `LLMExtractor` lets a model write the lessons instead.
+- **Compression.** The same error in related tasks merges into one lesson with a
+  support count. `consolidate()` merges duplicates, drops old traces and retires
+  lessons that keep failing to help.
 - **Retrieval.** IDF-weighted text similarity plus spreading activation over the
-  graph (lesson, concept, error type, episode). `feedback(lesson_id, helped)`
-  moves a lesson up or down in future rankings.
+  graph. Retrieval is word-based by default; pass
+  `MemoryEngine(embedder=OpenAICompatEmbedder("model"))` to use a real embedding model.
 
-## 2. Reasoning that checks itself: `agi.reasoning`
+## Reasoning that checks itself
 
 A `Problem` supplies hypotheses and a `verify` function. `MCTS` and
-`TreeOfThoughts` explore the hypotheses, run each through the verifier, and
-abandon a whole branch as soon as its assumption is refuted. A result is only
-reported as solved when verification passed.
+`TreeOfThoughts` explore, run each hypothesis through the verifier, and abandon a
+branch as soon as it is refuted. A result is reported as solved only when
+verification passed.
 
 ```python
 from agi.reasoning import MCTS, PipelineSynthesis, check_argument
@@ -88,17 +234,12 @@ proof = check_argument(["rain -> wet", "wet"], ["rain"])      # affirming the co
 assert not proof.valid and proof.counterexample == {"rain": False, "wet": True}
 ```
 
-Included problems: `PipelineSynthesis` (program synthesis from examples over a
-22-operation DSL), `Game24` (exact rational arithmetic), and `CodeRepair` (a
-model writes code, the sandbox runs the tests, the real failure goes back into
-the next prompt). `agi.reasoning.logic` is a propositional verifier (Tseitin
-encoding plus DPLL) that returns a counterexample for every invalid step.
+Included: `PipelineSynthesis` (program synthesis from examples), `Game24`,
+`CodeRepair` (a model writes code, the sandbox runs the tests, the real failure
+goes into the next prompt) and a propositional logic verifier that returns a
+counterexample for every invalid step.
 
-## 3. Learning from consequences: `agi.world`
-
-An `Environment` is anything the agent can act on and observe. `WorldModel`
-predicts the outcome of an action, measures its surprise when reality disagrees,
-and corrects itself from that observation.
+## Learning from consequences
 
 ```python
 from agi.world import ProjectileWorld, WorldModel, GroundedAgent, ideal_range
@@ -110,24 +251,18 @@ agent = GroundedAgent(env, model, observe="distance", seed=0)
 for trial in agent.practice(target=30.0, trials=6):
     print(f"predicted {trial.predicted:5.1f} m, landed {trial.observed:5.1f} m, missed by {trial.miss:4.2f} m")
 # predicted  30.0 m, landed  24.5 m, missed by 5.49 m
-# predicted  30.0 m, landed  28.2 m, missed by 1.85 m
 # ...
 # predicted  30.0 m, landed  29.7 m, missed by 0.34 m
 ```
 
-- **Bridges.** `ProjectileWorld` and `PhysicsWorld` (a small physics engine),
-  `CodeWorld` (the sandbox as an environment), and `FunctionWorld` (any Python
-  callables or API clients, behind an allowlist and a call budget).
-- **Causal discovery.** `CausalLearner` intervenes on variables (`do(x)`) instead
-  of only watching them. On the bundled example it recovers rain → wet grass →
-  slippery, and reports that ice cream and sunburn are correlated but not causal
-  (a hidden common cause).
+`agi.world` also has `CodeWorld` (the sandbox as an environment), `FunctionWorld`
+(any callables or API clients behind an allowlist and call budget), and
+`CausalLearner`, which intervenes on variables to tell causes from correlations.
 
-## 4. Self-improvement with hard limits: `agi.collective`
+## Self-improvement with hard limits
 
-Agents write new Python tools for each other. A tool enters the shared registry
-only after passing five gates, and the rules of those gates are not something an
-agent can change.
+Agents write Python tools for each other. A tool enters the shared registry only
+after five gates, and agents cannot change the rules of those gates.
 
 ```python
 from agi.collective import Collective, Builder, SpecReviewer, SafetyReviewer, ToolNeed
@@ -147,75 +282,28 @@ assert group.call("mean", [1, 2, 3, 4]).value == 2.5     # runs sandboxed, from 
 assert group.ledger.converged() and group.forge.audit.verify()
 ```
 
-The gates, in order:
+The gates, in order: **policy** (static safety check, naming, dependency and
+capacity rules), **author-tests**, **regression** (a new version must pass every
+test the old one was approved with), **safety-veto** (one safety concern rejects
+the tool whatever the vote), and **consensus** (two thirds of independent
+reviewers; the forge re-runs each reviewer's tests, and an approval whose tests
+fail counts as a rejection).
 
-1. **policy**: static safety check of code and tests, naming, dependency and capacity rules.
-2. **author-tests**: the author's tests must pass in the sandbox.
-3. **regression**: a new version must pass every test the previous version was approved with.
-4. **safety-veto**: one safety concern from any reviewer rejects the tool, whatever the vote.
-5. **consensus**: two thirds of independent reviewers must approve. The forge
-   re-runs each reviewer's tests itself; an approval whose tests fail counts as a rejection.
-
-Shared state lives in `conflux-state` CRDT replicas, one per agent. Every write is
-a signed action restricted to the writer's namespace, so replicas converge to
-identical state in any delivery order, and an agent cannot write the registry,
-forge another agent's review, or edit a message after signing it.
-
-The boundaries are listed in code as `agi.collective.HARD_BOUNDARIES`:
-
-- Tool code only ever runs inside the sandbox, during review and after approval.
-- The policy is fixed at construction; agents cannot propose, vote on or edit it.
-- Only the forge can write the tool registry.
-- Authors cannot approve their own tools; approvals must come from distinct, registered agents.
-- Evidence beats votes: a reviewer whose own tests fail is counted as a rejection.
-- Any safety concern from any reviewer is a veto.
-- A new version must pass every test the previous version was approved with.
-- Tools compose only through declared dependencies, to a bounded depth.
-- Every decision is recorded in a hash-chained audit log.
-
-## Putting it together: `LearningAgent`
-
-`agi.agent.LearningAgent` joins pillars 1 and 2: recall lessons, re-verify any
-remembered solution instead of trusting it, otherwise search with priors taken
-from memory, then record what happened.
-
-```python
-from agi import LearningAgent, Task
-from agi.memory import MemoryEngine
-
-task = Task("sort a list in descending order", [([3, 1, 2], [3, 2, 1]), ([5, 4, 9, 1], [9, 5, 4, 1])])
-agent = LearningAgent(MemoryEngine())
-print(agent.solve(task))    # solved via search: sort | reverse  [115 programs executed, ...]
-print(agent.solve(task))    # solved via recalled: sort | reverse  [1 programs executed, ...]
-```
-
-In the demo (`python -m agi agent`), a task related to one solved earlier needs
-194 program executions with memory against 2,341 without it.
-
-## Using a language model
-
-Everything above runs without a model. To add one, pass any `Callable[[str], str]`:
-
-```python
-from agi.llm import OpenAICompatLLM, ScriptedLLM
-
-llm = ScriptedLLM(["def double(x):\n    return 2 * x\n"])     # canned replies, for tests
-# llm = OpenAICompatLLM("gpt-4o-mini")       # any OpenAI-compatible endpoint; reads OPENAI_API_KEY
-```
-
-It is accepted by `agi.memory.LLMExtractor(llm)`, `agi.reasoning.CodeRepair(task, tests, llm)`
-and `agi.collective.LLMAgent(agent_id, llm)`. All three fail closed: unusable
-model output becomes a heuristic lesson, a refuted hypothesis, or a rejecting review.
+Shared state lives in `conflux-state` CRDT replicas, one per agent. Every write
+is a signed action restricted to the writer's namespace, so replicas converge in
+any delivery order and an agent cannot write the registry, forge another agent's
+review, or edit a message after signing it. The full list of rules is
+`agi.collective.HARD_BOUNDARIES`. Approved tools can be handed to the ReAct loop
+with `standard_tools(forge=group.forge)`.
 
 ## The sandbox, and what it does not do
 
-`agi.sandbox.Sandbox` runs untrusted code in layers: a static AST gate (import
-allowlist, no `eval`/`exec`/`open`, no underscore attributes), a fresh
+`agi.sandbox.Sandbox` runs untrusted code in layers: a static AST gate, a fresh
 interpreter process with an empty environment, kernel limits on CPU, memory,
-file size and process count, a network namespace where the host allows it, and
-a runtime audit hook. `Sandbox().isolation` reports which layers are active.
+file size and process count, a network namespace where the host allows it, and a
+runtime audit hook. `Sandbox().isolation` reports which layers are active.
 
-The static gate and the audit hook run inside CPython and are not a security
+The static gate and audit hook run inside CPython and are not a security
 boundary on their own. The process, kernel-limit and namespace layers are the
 real boundary, and they are as strong as the host kernel. For code you consider
 hostile, wrap the interpreter in a container or VM through
@@ -223,33 +311,47 @@ hostile, wrap the interpreter in a container or VM through
 
 ## Known limits
 
-- **Search without priors is weak on deep programs.** With no memory to guide it,
-  `MCTS` on `PipelineSynthesis` solved the four-step "second largest" task on
-  only 3 of 6 seeds within 3,000 verifications.
-- **Examples can under-specify a task.** Synthesis returns the first program
-  that fits every example, so too few examples can fit a coincidental program.
-- **Memory retrieval is lexical.** It uses hashed word features, not a learned
-  embedding, so a lesson phrased very differently from the query can be missed.
-  Pass a different `embedder` to change this.
-- **`OpenAICompatLLM` is tested against a local stub server only**, not against a
-  live model endpoint.
+- **No model is bundled, and none was available while building this.** The ReAct
+  loop, the CLI and the model clients are tested against scripted replies and a
+  local stub server, never against a live model. Expect to tune the prompt for
+  the model you use.
+- **The grounding check is a heuristic.** It looks at numbers only. It catches a
+  figure that no tool returned; it does not catch a wrong name, a misread
+  result, or a number copied from the wrong row.
+- **The trained policy is small and specific.** It is a linear softmax model
+  over hand-written features, for one DSL of 22 list operations. The held-out
+  tasks come from the same random generator as the training tasks. Rank and
+  position features were added after the hand-written "second largest" task
+  failed, so that task is not an independent test.
+- **Memory credit is coarse.** A recalled lesson is marked as having helped
+  whenever the run succeeded, whether or not the model used it.
+- **Tool timeouts abandon, they do not kill.** A tool that overruns is reported
+  as timed out but its thread keeps running until it returns. The `python` tool
+  is different: the sandbox does kill it.
+- **`http_get` resolves the host twice** (once to check, once to fetch), so a
+  DNS server that changes its answer in between could get past the address
+  check. Use the host allowlist where that matters.
 - **The collective runs in one process.** Replication, signatures and namespace
-  checks are real, but there is no network transport; the forge is a single
+  checks are real, but there is no network transport and the forge is a single
   trusted kernel.
-- **Platforms.** Windows is not supported (the sandbox relies on POSIX resource
-  limits). macOS is untested and would run without the network-namespace layer.
+- **Platforms.** Windows is not supported. macOS is untested and would run
+  without the network-namespace layer.
 
 ## Layout
 
 ```
 agi/
-  sandbox.py      layered sandbox used by pillars 2, 3 and 4
-  llm.py          the only model-facing module
-  agent.py        LearningAgent: memory plus verified search
-  memory/         pillar 1
-  reasoning/      pillar 2
-  world/          pillar 3
-  collective/     pillar 4
-  __main__.py     python -m agi demos
+  tools/          tool registry and built-in tools
+  react.py        the ReAct loop, answer verifiers, Conversation
+  memory/         episodic memory and knowledge graph
+  reasoning/      MCTS, Tree-of-Thoughts, logic verifier, problems
+  training/       search policy training, fine-tuning data export
+  evals.py        real-world benchmark tasks
+  world/          environments, world model, causal discovery
+  collective/     ledger, safety policy, tool forge, agents
+  sandbox.py      layered sandbox
+  llm.py          model and embedding clients (the only model-facing module)
+  agent.py        LearningAgent: memory, verified search, trained policy
+  __main__.py     demos and the run/chat/eval/train commands
 tests/            one file per module
 ```

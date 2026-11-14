@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agi-toolkit"
-version = "0.1.0"
-description = "Building blocks for more capable, more trustworthy AI agents: episodic memory, verified reasoning, grounded world models and safe multi-agent self-improvement."
+version = "0.2.0"
+description = "Building blocks for more capable, more trustworthy AI agents: a tool-using ReAct loop, episodic memory, verified reasoning, trained search, grounded world models and safe multi-agent self-improvement."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = ["conflux-state>=0.9.3"]

@@ -96,9 +96,13 @@ class PipelineSynthesis(Problem):
 
     def __init__(self, examples: Sequence[tuple], sandbox: Sandbox | None = None,
                  ops: Mapping[str, Op] | None = None, max_len: int = 4,
-                 priors: Mapping[str, float] | None = None, avoid: Sequence[tuple] = ()):
+                 priors: Mapping[str, float] | None = None, avoid: Sequence[tuple] = (),
+                 policy: Any = None):
         """``priors`` weights individual ops; ``avoid`` lists ``(previous_op, op)``
-        pairs known to fail (``previous_op`` is ``None`` at the start)."""
+        pairs known to fail (``previous_op`` is ``None`` at the start); ``policy``
+        is a trained :class:`agi.training.SearchPolicy` that ranks the next op."""
+        self.policy = policy
+        self._guidance: dict[tuple, dict] = {}
         self.avoid = {tuple(pair) for pair in avoid}
         self.examples = [(i, o) for i, o in examples]
         self.sandbox = sandbox
@@ -132,7 +136,26 @@ class PipelineSynthesis(Problem):
 
     def prior(self, state: tuple, action: str) -> float:
         penalty = 0.2 if ((state[-1] if state else None), action) in self.avoid else 1.0
-        return self.priors.get(action, 1.0) * penalty
+        return self.priors.get(action, 1.0) * penalty * self._learned(state, action)
+
+    def _learned(self, state: tuple, action: str) -> float:
+        """The trained policy's opinion, as a multiplier around 1.0 (1.0 = no opinion)."""
+        if self.policy is None:
+            return 1.0
+        guidance = self._guidance.get(state)
+        if guidance is None:
+            guidance = {}
+            # Only values this search has already computed are used: no extra execution.
+            results = self._runs.get(state) if state else [
+                {"ok": True, "value": i} for i, _ in self.examples]
+            if results and all(r["ok"] for r in results):
+                legal = self.actions(state)
+                probabilities = self.policy.distribution(
+                    [r["value"] for r in results], [want for _, want in self.examples],
+                    len(state), state[-1] if state else None, legal)
+                guidance = {a: min(8.0, max(0.05, p * len(legal))) for a, p in probabilities.items()}
+            self._guidance[state] = guidance
+        return guidance.get(action, 1.0)
 
     def describe(self, state: tuple) -> str:
         return " | ".join(state) or "(identity)"

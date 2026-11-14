@@ -16,6 +16,7 @@ safeguards around that rule are what make it usable in practice:
 """
 from __future__ import annotations
 
+import inspect
 import json
 import re
 import time
@@ -24,6 +25,7 @@ from typing import Any, Callable, Iterable, Sequence
 
 from agi.domain.entities.tool import ToolRegistry
 from agi.domain.ports.llm import LLM
+from agi.domain.services.claims import Evidence, unsupported_names
 from agi.domain.services.text import extract_json, numbers_in
 
 SYSTEM = """You are a careful problem-solving agent. You solve the task step by step, using tools
@@ -138,44 +140,87 @@ def parse_reply(text: str, tools: ToolRegistry | None = None) -> Parsed:
 # --------------------------------------------------------------------------- #
 # answer verification
 # --------------------------------------------------------------------------- #
-class GroundingVerifier:
-    """Challenges a final answer that contains numbers no observation supports.
+class Objection(str):
+    """What a verifier found wrong with an answer, as the text shown to the model.
 
-    A number counts as supported if it appears in the task or in any
-    observation, allowing for rounding and for a ratio written as a percentage.
-    Small whole numbers are ignored (counts, list positions, "2 files").
-    This is a cheap check for the commonest hallucination - a figure that was
-    never computed or looked up - not a proof that the answer is right.
+    ``soft`` means the answer may still be right: the model is asked once to
+    correct or confirm it, and if it stands, the answer is accepted and the
+    doubt is reported (``Run.unverified``) instead of failing the run.
     """
 
-    def __init__(self, ignore_below: int = 13):
-        self.ignore_below = ignore_below
+    soft: bool = False
+    figures: tuple = ()
+    names: tuple = ()
 
-    def unsupported(self, task: str, answer: str, steps: Sequence["ReActStep"]) -> list[str]:
-        evidence = [v for v, _ in numbers_in(task)]
+    def __new__(cls, text: str, soft: bool = False, figures: Sequence[str] = (), names: Sequence[str] = ()):
+        made = super().__new__(cls, text)
+        made.soft, made.figures, made.names = soft, tuple(figures), tuple(names)
+        return made
+
+
+class GroundingVerifier:
+    """Challenges a final answer that states things no observation supports.
+
+    **Figures.** A number counts as supported if it appears in the task, in any
+    observation or in ``evidence`` (earlier turns, what memory supplied),
+    allowing for rounding and for a ratio written as a percentage. Small whole
+    numbers are ignored (counts, list positions, "2 files"). An unsupported
+    figure fails the run if the model does not fix it.
+
+    **Names** (``check_names``). File names, identifiers, e-mail addresses,
+    quoted values and proper nouns must appear in the task, an observation, the
+    arguments of a call that succeeded, or ``evidence``. Spotting a name is
+    guesswork, so this is a *soft* objection: the model is asked once, and a
+    name that survives is reported, not treated as a failure.
+
+    This is a cheap check for the commonest hallucinations - a figure or a name
+    that was never computed or looked up - not a proof that the answer is right.
+    """
+
+    def __init__(self, ignore_below: int = 13, check_names: bool = True):
+        self.ignore_below = ignore_below
+        self.check_names = check_names
+
+    def unsupported(self, task: str, answer: str, steps: Sequence["ReActStep"], evidence: str = "") -> list[str]:
+        known = [v for v, _ in numbers_in(task)] + [v for v, _ in numbers_in(evidence)]
         for step in steps:
             if step.ok and step.action:
-                evidence += [v for v, _ in numbers_in(step.observation)]
+                known += [v for v, _ in numbers_in(step.observation)]
         missing = []
         for value, decimals in numbers_in(answer):
             if decimals == 0 and abs(value) < self.ignore_below:
                 continue
             tolerance = 0.5 * 10 ** -decimals + 1e-9
             if any(abs(e - value) <= tolerance or abs(e * 100 - value) <= tolerance
-                   for e in evidence):
+                   for e in known):
                 continue
             shown = f"{value:.{decimals}f}"
             if shown not in missing:
                 missing.append(shown)
         return missing
 
-    def __call__(self, task: str, answer: str, steps: Sequence["ReActStep"]) -> str | None:
-        missing = self.unsupported(task, answer, steps)
-        if not missing:
+    def unsupported_names(self, task: str, answer: str, steps: Sequence["ReActStep"], evidence: str = "") -> list[str]:
+        seen = [task, evidence]
+        for step in steps:
+            if step.ok and step.action:                     # a call that worked vouches for its own arguments
+                seen += [step.action, step.observation, json.dumps(step.args, ensure_ascii=False, default=str)]
+        return unsupported_names(answer, Evidence(*seen))
+
+    def __call__(self, task: str, answer: str, steps: Sequence["ReActStep"], evidence: str = "") -> Objection | None:
+        figures = self.unsupported(task, answer, steps, evidence)
+        names = self.unsupported_names(task, answer, steps, evidence) if self.check_names else []
+        if not figures and not names:
             return None
-        return (f"The figure(s) {', '.join(missing)} in your answer do not appear in the task or in "
-                f"any observation. Compute or look them up with a tool, then answer again. If they "
-                f"are already justified, restate the answer and say where each figure comes from.")
+        parts = []
+        if figures:
+            parts.append(f"The figure(s) {', '.join(figures)} in your answer do not appear in the task or in "
+                         f"any observation. Compute or look them up with a tool, then answer again. If they "
+                         f"are already justified, restate the answer and say where each figure comes from.")
+        if names:
+            parts.append(f"The name(s) {', '.join(repr(name) for name in names)} in your answer do not appear in "
+                         f"the task or in any observation. If one is a guess or a slip, correct it or look it up; "
+                         f"if you are sure of it, repeat your answer.")
+        return Objection(" ".join(parts), soft=not figures, figures=figures, names=names)
 
 
 class LLMVerifier:
@@ -229,6 +274,8 @@ class Run:
     steps: list[ReActStep] = field(default_factory=list)
     stop_reason: str = ""               # "answer" | "max_steps" | "format" | "loop" | "llm_error"
     grounded: bool | None = None        # None when no verifier ran
+    unverified: list = field(default_factory=list)   # names in the answer that nothing seen supports
+    credited: dict = field(default_factory=dict)     # lesson id -> True (helped), False (did not), None (no evidence)
     success: bool | None = None         # set when a check was supplied, else a best guess
     final_reply: str = ""
     challenges: int = 0
@@ -296,6 +343,12 @@ class ReActAgent:
         self.llm, self.tools, self.memory = llm, tools, memory
         self.max_steps, self.max_challenges = max_steps, max_challenges
         self.verifier = GroundingVerifier() if verifier == "grounding" else verifier
+        try:                                            # older verifiers take (task, answer, steps) only
+            accepted = inspect.signature(self.verifier).parameters if self.verifier is not None else {}
+            self._verifier_takes_evidence = "evidence" in accepted or any(
+                p.kind is inspect.Parameter.VAR_KEYWORD for p in accepted.values())
+        except (TypeError, ValueError):
+            self._verifier_takes_evidence = False
         self.max_context_chars = max_context_chars
         self.tags = tuple(tags)
         self.system = system or SYSTEM
@@ -362,6 +415,16 @@ class ReActAgent:
         text = head + pad + closing + "Thought:"
         return self.working.track(text) if self.working is not None else text
 
+    def _verify(self, run: "Run", task: str, answer: str, evidence: str):
+        """Ask the verifier about ``answer`` and record its verdict on ``run``. Returns its objection, if any."""
+        if self.verifier is None:
+            return None
+        objection = self.verifier(task, answer, run.steps, evidence=evidence) if self._verifier_takes_evidence \
+            else self.verifier(task, answer, run.steps)
+        run.grounded = objection is None or bool(getattr(objection, "soft", False))
+        run.unverified = list(getattr(objection, "names", ())) if objection is not None else []
+        return objection
+
     # -- run --------------------------------------------------------------- #
     def run(self, task: str, check: Callable[[str], bool] | None = None, context: str = "") -> Run:
         """Solve ``task``. ``check(answer)``, if given, decides success for memory and reports."""
@@ -379,6 +442,9 @@ class ReActAgent:
         bad_format = repeats = 0
         if self.verifier is not None:
             run.grounded = False
+        # What the answer may legitimately draw on besides this run's own observations.
+        evidence = "\n".join(filter(None, [context, self.briefing, lessons,
+                                           " ".join(tool.name for tool in self.tools)]))
 
         if self.working is not None:
             self.working.clear(keep_pinned=False)
@@ -412,10 +478,7 @@ class ReActAgent:
             bad_format = 0
 
             if parsed.answer is not None:
-                objection = None
-                if self.verifier is not None:
-                    objection = self.verifier(task, parsed.answer, run.steps)
-                    run.grounded = objection is None
+                objection = self._verify(run, task, parsed.answer, evidence)
                 if objection and run.challenges < self.max_challenges:
                     run.challenges += 1
                     note(ReActStep(parsed.thought, None, {}, f"[verifier] {objection}", False, reply))
@@ -450,8 +513,7 @@ class ReActAgent:
                 parsed = parse_reply(reply, self.tools)
                 if parsed.answer is not None:
                     run.answer, run.final_reply = parsed.answer, reply
-                    if self.verifier is not None:
-                        run.grounded = self.verifier(task, parsed.answer, run.steps) is None
+                    self._verify(run, task, parsed.answer, evidence)
             except Exception as exc:
                 run.error = f"{type(exc).__name__}: {exc}"
 
@@ -486,8 +548,12 @@ class ReActAgent:
                                            f"{run.error or 'the answer was wrong or unsupported'}",
             meta={"answer": run.answer, "stop_reason": run.stop_reason, "grounded": run.grounded})
         run.learned = self.memory.record(episode)
-        for lesson in run.recalled:                     # crude credit: was it present when we succeeded?
-            self.memory.feedback(lesson.id, helped=bool(run.success))
+        from agi.application.memory.credit import lesson_verdict
+        for lesson in run.recalled:                     # credit only the lessons the run shows mattered
+            verdict = lesson_verdict(lesson, run.steps, bool(run.success), run.answer)
+            run.credited[lesson.id] = verdict
+            if verdict is not None:
+                self.memory.feedback(lesson.id, helped=verdict)
 
 
 class Conversation:

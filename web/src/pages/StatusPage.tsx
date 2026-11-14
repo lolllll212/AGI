@@ -55,6 +55,25 @@ export function StatusPage({ api, info, health }: { api: Api; info: Info | null;
 
           <div className="card">
             <h2>Learned routing</h2>
+            {data.routing_model && data.routing_model.outcomes > 0 && (
+              <p className="muted small">
+                Across kinds of task, a model has learned from {data.routing_model.outcomes} outcomes.{" "}
+                {data.routing_model.trusted
+                  ? `Its forecasts have removed ${percent(data.routing_model.skill)} of the error of guessing the average, so the router consults it.`
+                  : "Its forecasts have not yet beaten guessing the average, so the router ignores it."}
+                {data.routing_model.trusted && data.routing_model.strongest.length > 0 && (
+                  <>
+                    {" "}
+                    It leans most on:{" "}
+                    {data.routing_model.strongest
+                      .slice(0, 5)
+                      .map(([name, weight]) => `${name.replace("word:", "")} (${weight > 0 ? "harder" : "easier"})`)
+                      .join(", ")}
+                    .
+                  </>
+                )}
+              </p>
+            )}
             {data.routing.length === 0 ? (
               <p className="muted">
                 Nothing learned yet. After enough runs of one kind, the router notes how often the quick path failed and

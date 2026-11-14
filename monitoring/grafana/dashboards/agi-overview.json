@@ -511,6 +511,15 @@
             "uid": "prometheus"
           },
           "legendFormat": "answers with unsupported figures"
+        },
+        {
+          "refId": "D",
+          "expr": "rate(agi_answers_with_unverified_names_total[5m]) * 60",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "legendFormat": "answers with unverified names"
         }
       ],
       "fieldConfig": {

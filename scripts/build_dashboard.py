@@ -77,9 +77,11 @@ def build() -> dict:
 
     board.add("Escalations, compactions, unsupported answers", "timeseries",
               ["rate(agi_escalations_total[5m]) * 60", "rate(agi_context_compactions_total[5m]) * 60",
-               "rate(agi_ungrounded_answers_total[5m]) * 60"],
+               "rate(agi_ungrounded_answers_total[5m]) * 60",
+               "rate(agi_answers_with_unverified_names_total[5m]) * 60"],
               0, 12, unit="short", description="Per minute.",
-              names=["escalations", "context compactions", "answers with unsupported figures"])
+              names=["escalations", "context compactions", "answers with unsupported figures",
+                     "answers with unverified names"])
     board.add("HTTP responses by status", "timeseries", ["sum by (status) (rate(agi_http_requests_total[5m]))"],
               12, 12, unit="reqps", names=["{{status}}"])
     board.next_row()

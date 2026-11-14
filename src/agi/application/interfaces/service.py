@@ -173,6 +173,7 @@ class AgentService:
                 "sessions": len(self.session_store) if self.session_store is not None else len(self._sessions),
                 "sessions_in_memory": len(self._sessions),
                 "routing": self.engine.router.learner.explain()[:10] if self.engine.router.learner else [],
+                "routing_model": self.engine.router.learner.report() if self.engine.router.learner else None,
                 "memory": memory.stats() if hasattr(memory, "stats") else None,
                 "drift": self.monitor.status() if self.monitor is not None else None,
                 "trace_export": [e.stats() for e in self.engine.tracer.exporters if hasattr(e, "stats")],

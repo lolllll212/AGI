@@ -62,6 +62,7 @@ class EngineConfig(Model):
     escalate: bool = True
     learn: bool = True
     verify: bool = True
+    verify_names: bool = True                            # also question names in an answer that nothing seen supports
     max_challenges: int = Field(default=1, ge=0)
     loop_repeats: int = Field(default=3, ge=2)           # identical results from one tool before it is a loop
     system_prompt: str | None = None
@@ -84,6 +85,7 @@ class _Outcome:
     plan: Plan | None = None
     compactions: int = 0
     prompt_reuse: float | None = None
+    unverified: list = field(default_factory=list)       # names in the answer that nothing seen supports
 
 
 class _RunState:
@@ -263,7 +265,8 @@ class CognitiveEngine:
                                summarizer=model if self.config.summarize_context else None) \
             if self.config.context_tokens else None
         agent = ReActAgent(model, tools, memory=lessons, max_steps=self.config.max_steps,
-                           verifier="grounding" if self.config.verify else None,
+                           verifier=GroundingVerifier(check_names=self.config.verify_names)
+                           if self.config.verify else None,
                            max_challenges=self.config.max_challenges, tags=self.tags,
                            system=self.config.system_prompt, on_step=on_step, working=window)
         if self.config.tool_k:
@@ -275,7 +278,7 @@ class CognitiveEngine:
         stop = "budget" if state.halted and run.answer is None else run.stop_reason
         outcome = _Outcome(answer=run.answer, success=bool(run.success), grounded=run.grounded, steps=steps,
                            stop_reason=stop, error=run.error or (state.halted if run.answer is None else None),
-                           plan=plan)
+                           plan=plan, unverified=list(run.unverified) if run.answer is not None else [])
         if run.context is not None:
             used = run.context
             outcome.compactions = used.compactions + used.dropped
@@ -444,7 +447,10 @@ class CognitiveEngine:
             llm_calls=state.llm_calls, plans_tried=outcome.plans_tried, escalated=escalated,
             compactions=outcome.compactions, prompt_reuse=outcome.prompt_reuse,
             repairs=len(self.tools.repaired) + (self.healer.repairs if self.healer else 0) - repairs_before,
-            error=None if outcome.success else (outcome.error or state.halted), flags=flags + state.flags)
+            error=None if outcome.success else (outcome.error or state.halted),
+            flags=flags + state.flags + [f"unverified_name:{name}" for name in outcome.unverified])
+        if outcome.unverified:
+            self.tracer.event("guardrail", "unverified_names", names=outcome.unverified)
         if self.config.learn and self.memory is not None and (route.reply is None or used != "reflex"):
             self._remember(result, learned_by_thinking=used != "reflex")
         return result
@@ -454,7 +460,8 @@ class CognitiveEngine:
                  for s in result.steps if s.action]
         try:
             self.memory.remember_run(result.task, bool(result.success), steps, result.answer, self.tags,
-                                     store_trajectory=learned_by_thinking and result.grounded is not False,
+                                     store_trajectory=learned_by_thinking and result.grounded is not False
+                                     and not any(flag.startswith("unverified_name:") for flag in result.flags),
                                      mode=result.mode, stop_reason=result.stop_reason, trace_id=result.trace_id)
             self.tracer.event("memory", "remember", success=bool(result.success), steps=len(steps))
         except Exception as exc:                            # memory trouble must not fail the task

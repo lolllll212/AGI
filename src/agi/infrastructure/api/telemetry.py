@@ -49,6 +49,8 @@ class AgentMetrics:
                                      "Times a run condensed earlier steps to stay inside its context window.")
         self.ungrounded = r.counter("agi_ungrounded_answers_total",
                                     "Answers containing figures that no tool result supports.")
+        self.unverified = r.counter("agi_answers_with_unverified_names_total",
+                                    "Answers accepted although they name something no tool result supports.")
         self.in_flight = r.gauge("agi_runs_in_flight", "Tasks being worked on right now.")
         self.sessions = r.gauge("agi_sessions", "Conversations the service is keeping.")
         self.circuit = r.gauge("agi_model_circuit_open", "1 while the circuit breaker around the model is open.")
@@ -74,6 +76,8 @@ class AgentMetrics:
             self.escalations.inc()
         if result.grounded is False:
             self.ungrounded.inc()
+        if any(flag.startswith("unverified_name:") for flag in result.flags):
+            self.unverified.inc()
 
     def observe_http(self, method: str, route: str, status: int, seconds: float) -> None:
         self.http_requests.inc(method=method, route=route, status=str(status))

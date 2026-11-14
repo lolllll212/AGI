@@ -113,7 +113,7 @@ def test_info_describes_the_server_to_its_caller(service):
     with AgentServer(service, port=0, keys={"alice": ALICE}) as server:
         status, info = get_json(server, "/v1/info", ALICE)
         assert status == 200
-        assert info == {"version": "0.5.0", "model": "test-model", "demo": True, "examples": ["What is 2 + 2?"],
+        assert info == {"version": "0.6.0", "model": "test-model", "demo": True, "examples": ["What is 2 + 2?"],
                         "caller": "alice", "sandbox": "Sandbox", "metrics": True}
         health = get_json(server, "/health")[1]
         assert health["auth_required"] is True and "caller" not in health
@@ -184,7 +184,7 @@ def test_metrics_count_runs_requests_and_rejections(service):
         assert sample(text, 'agi_http_rejected_total{reason="unauthorized"}') == 1
         assert sample(text, "agi_model_configured") == 1 and sample(text, "agi_model_circuit_open") == 0
         assert sample(text, "agi_runs_in_flight") == 0 and sample(text, "agi_tools") >= 10
-        assert sample(text, 'agi_build_info{version="0.5.0"}') == 1 and sample(text, "agi_uptime_seconds") >= 0
+        assert sample(text, 'agi_build_info{version="0.6.0"}') == 1 and sample(text, "agi_uptime_seconds") >= 0
         assert sample(text, 'agi_http_request_duration_seconds_bucket{route="/v1/run",le="+Inf"}') == 3
         for line in text.splitlines():                       # every line is a comment or "name{labels} number"
             assert line.startswith("# ") or SAMPLE_LINE.fullmatch(line), line

@@ -32,7 +32,7 @@ const health = (auth: boolean) => ({
   body: { status: "ok", model: true, model_circuit: "closed", uptime_s: 5, in_flight: 0, tools: 10, auth_required: auth },
 });
 const info = {
-  body: { version: "0.5.0", model: "test-model", demo: false, examples: ["What is 2 + 2?"], caller: "default", sandbox: "Sandbox", metrics: true },
+  body: { version: "0.6.0", model: "test-model", demo: false, examples: ["What is 2 + 2?"], caller: "default", sandbox: "Sandbox", metrics: true },
 };
 const result = {
   task: "What is 2 + 2?", answer: "2 + 2 = 4", mode: "reflex", system: 1, route: { reason: "plain arithmetic" },
@@ -97,6 +97,17 @@ describe("the console", () => {
     expect(sent.mode).toBeNull();
     expect(sent.steps).toBe(true);
     expect(sent.session).toMatch(/^web-[0-9a-f]{18}$/);
+  });
+
+  it("points out a name in the answer that nothing the agent saw supports", async () => {
+    fakeServer({
+      "GET /health": () => health(false),
+      "GET /v1/info": () => info,
+      "POST /v1/run": () => ({ body: { ...result, answer: "4, as Vikram Rao expected", flags: ["unverified_name:Vikram Rao"] } }),
+    });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "What is 2 + 2?" }));
+    expect(await screen.findByText("unverified: Vikram Rao")).toBeTruthy();
   });
 
   it("shows a failed request as an error instead of an answer", async () => {

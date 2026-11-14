@@ -92,6 +92,7 @@ export interface Stats {
   sessions: number;
   sessions_in_memory: number;
   routing: [string, number, number][];
+  routing_model: { outcomes: number; skill: number; trusted: boolean; strongest: [string, number][] } | null;
   memory: Record<string, unknown> | null;
   drift: unknown;
   trace_export: Record<string, unknown>[];

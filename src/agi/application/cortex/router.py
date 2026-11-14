@@ -12,10 +12,18 @@ The router returns one of three modes:
 Escalation is by evidence: signals in the task (several steps, code, a
 judgement call, length), and experience (a similar task failed before, or a
 cached policy has stopped being reliable).
+
+Experience is kept at two levels. Per kind of task (:class:`RouteLearner`) the
+router counts how the reason-act loop did, and follows the count once it has
+enough. Across kinds (:class:`RouteModel`) a small model learns which signals
+and words go with failure, so that a kind seen only a few times can borrow from
+the others; the model is listened to only while its own forecasts, each made
+before the outcome was known, have beaten guessing the average.
 """
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import threading
@@ -67,6 +75,109 @@ class RouterConfig(Model):
     recheck_every: int = 10              # of tasks experience moved to planning, try every Nth on react again,
                                          # so a record made when things were worse can recover (0 = never)
     explore_every: int = 0               # also try react on every Nth task the *rules* call hard (0 = never)
+    generalise: bool = True              # let evidence about other kinds of task inform a kind seen too rarely
+    generalise_after: int = 40           # outcomes the cross-kind model must have seen before it is consulted
+    min_skill: float = 0.1               # ... and the share of the error of "guess the average" it must remove
+    generalise_plan_above: float = 0.8   # the model alone moves a task to planning above this estimate
+    generalise_relax_below: float = 0.15 # ... and to the reason-act loop below this one
+
+
+_WORD = re.compile(r"[a-z][a-z_-]{2,}")
+_COMMON = frozenset("""the and for with from that this what which when where who how why are was were will would
+can could should does did has have had not but its into over under about than then them they their there here
+all any each every some more most other such only also just very please give show tell find make get use using
+you your our out per via one two three""".split())
+_NO_PROFILE = ("long", "experience", "rechecking", "exploring", "generalised")
+
+
+def task_words(text: str, limit: int = 40) -> list[str]:
+    """The distinct content words of a task, in order of appearance."""
+    found: list[str] = []
+    for word in _WORD.findall(text.lower()):
+        if word not in _COMMON and word not in found:
+            found.append(word)
+            if len(found) == limit:
+                break
+    return found
+
+
+class RouteModel:
+    """Estimates the chance that the reason-act loop fails, from a task's signals and words.
+
+    Logistic regression trained one outcome at a time (AdaGrad steps). Unlike the
+    per-kind counts it shares evidence: if tasks that mention "reconcile" keep
+    failing whatever else they look like, the next one is flagged on first sight.
+
+    It also keeps score on itself. Before learning from an outcome it records the
+    loss of the forecast it had just made, next to the loss of forecasting the
+    failure rate so far. ``skill`` is the share of that baseline's loss the model
+    removes, over roughly the last hundred outcomes. A model that has found
+    nothing real scores about zero or below and is then ignored.
+    """
+
+    def __init__(self, rate: float = 0.5, decay: float = 0.99, max_features: int = 4000):
+        self.rate, self.decay, self.max_features = rate, decay, max_features
+        self.weights: dict[str, float] = {}
+        self.squares: dict[str, float] = {}                 # per-feature sum of squared gradients
+        self.seen = 0
+        self.failures = 0
+        self.model_loss = 0.0                               # decayed sums of the forecasts' log loss
+        self.base_loss = 0.0
+
+    @staticmethod
+    def inputs(features: Sequence[str], text: str) -> list[str]:
+        return ["bias", *features, *(f"word:{word}" for word in task_words(text))]
+
+    def predict(self, inputs: Sequence[str]) -> float:
+        score = sum(self.weights.get(name, 0.0) for name in inputs)
+        return 1.0 / (1.0 + math.exp(-max(-30.0, min(30.0, score))))
+
+    @property
+    def skill(self) -> float:
+        return 1.0 - self.model_loss / self.base_loss if self.base_loss > 1e-9 else 0.0
+
+    def update(self, inputs: Sequence[str], failed: bool) -> None:
+        target = 1.0 if failed else 0.0
+        forecast = self.predict(inputs)
+        average = (self.failures + 1) / (self.seen + 2)
+        self.model_loss = self.decay * self.model_loss + _log_loss(forecast, target)
+        self.base_loss = self.decay * self.base_loss + _log_loss(average, target)
+        gradient = forecast - target
+        for name in inputs:
+            self.squares[name] = self.squares.get(name, 0.0) + gradient * gradient
+            self.weights[name] = self.weights.get(name, 0.0) - self.rate * gradient / math.sqrt(self.squares[name] + 1e-8)
+        self.seen += 1
+        self.failures += int(failed)
+        if len(self.weights) > self.max_features:           # keep the features that carry the most
+            keep = sorted(self.weights, key=lambda name: -abs(self.weights[name]))[: self.max_features * 3 // 4]
+            self.weights = {name: self.weights[name] for name in keep}
+            self.squares = {name: self.squares[name] for name in keep}
+
+    def strongest(self, k: int = 8) -> list[tuple[str, float]]:
+        """The inputs that move the estimate most (positive: goes with failure)."""
+        ranked = sorted(((name, weight) for name, weight in self.weights.items() if name != "bias"),
+                        key=lambda item: (-abs(item[1]), item[0]))
+        return [(name, round(weight, 3)) for name, weight in ranked[:k]]
+
+    def to_dict(self) -> dict:
+        return {"weights": self.weights, "squares": self.squares, "seen": self.seen, "failures": self.failures,
+                "model_loss": self.model_loss, "base_loss": self.base_loss}
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "RouteModel":
+        model = cls()
+        model.weights = {str(k): float(v) for k, v in data["weights"].items()}
+        model.squares = {str(k): float(v) for k, v in data["squares"].items()}
+        model.seen, model.failures = int(data["seen"]), int(data["failures"])
+        model.model_loss, model.base_loss = float(data["model_loss"]), float(data["base_loss"])
+        if set(model.weights) != set(model.squares) or not all(map(math.isfinite, model.weights.values())):
+            raise ValueError("inconsistent route model")
+        return model
+
+
+def _log_loss(forecast: float, target: float) -> float:
+    forecast = min(1.0 - 1e-6, max(1e-6, forecast))
+    return -math.log(forecast if target else 1.0 - forecast)
 
 
 class RouteLearner:
@@ -78,15 +189,21 @@ class RouteLearner:
     about "why" questions says nothing about plain summaries - which makes the
     learner slow to generalise and hard to mislead.
 
+    Next to the counts it trains a :class:`RouteModel` on the same outcomes. The
+    model generalises where the counts cannot, and is used only for profiles the
+    counts know too little about, and only while it is ``trusted``.
+
     It only ever moves a task between ``react`` and ``deliberate``; the engine
     still escalates when a path fails, so a wrong estimate costs time, never an
     answer.
     """
 
-    def __init__(self, path: str | None = None):
+    def __init__(self, path: str | None = None, generalise_after: int = 40, min_skill: float = 0.1):
         self.path = path
         self.profiles: dict[str, list[int]] = {}           # profile -> [runs, failures]
         self.observations = 0
+        self.model = RouteModel()
+        self.generalise_after, self.min_skill = generalise_after, min_skill
         self._lock = threading.Lock()
         if path and os.path.isfile(path):
             try:
@@ -96,11 +213,17 @@ class RouteLearner:
                 self.observations = int(data.get("observations", 0))
             except (OSError, ValueError, TypeError, KeyError, IndexError, AttributeError):
                 self.profiles, self.observations = {}, 0   # a damaged file means starting over
+                data = {}
+            try:                                            # absent in files written before 0.6
+                if "model" in data:
+                    self.model = RouteModel.from_dict(data["model"])
+            except (ValueError, TypeError, KeyError, AttributeError):
+                self.model = RouteModel()
 
     @staticmethod
     def features(signals: Sequence[str], words: int) -> list[str]:
         size = "short" if words <= 12 else "medium" if words <= 40 else "long"
-        return sorted(set(s for s in signals if s not in ("long", "experience", "rechecking", "exploring"))) + [f"length:{size}"]
+        return sorted(set(s for s in signals if s not in _NO_PROFILE)) + [f"length:{size}"]
 
     @staticmethod
     def profile(features: Sequence[str]) -> str:
@@ -118,17 +241,36 @@ class RouteLearner:
         runs, failures = self.profiles.get(self.profile(features), [0, 0])
         return (failures + 1) / (runs + 2)
 
-    def update(self, features: Sequence[str], react_failed: bool) -> None:
+    @property
+    def trusted(self) -> bool:
+        """Whether the cross-kind model has earned a say: enough outcomes, and forecasts that beat the average."""
+        return self.model.seen >= self.generalise_after and self.model.skill >= self.min_skill
+
+    def forecast(self, features: Sequence[str], text: str) -> float:
+        """The cross-kind model's estimate for this particular task (its signals, length and words)."""
+        with self._lock:
+            return self.model.predict(RouteModel.inputs(features, text))
+
+    def report(self) -> dict:
+        """How the cross-kind model is doing, for people: what it has seen and what it leans on."""
+        with self._lock:
+            return {"outcomes": self.model.seen, "skill": round(self.model.skill, 3), "trusted": self.trusted,
+                    "strongest": self.model.strongest()}
+
+    def update(self, features: Sequence[str], react_failed: bool, text: str | None = None) -> None:
         with self._lock:
             record = self.profiles.setdefault(self.profile(features), [0, 0])
             record[0] += 1
             record[1] += int(bool(react_failed))
             self.observations += 1
+            if text is not None:
+                self.model.update(RouteModel.inputs(features, text), bool(react_failed))
             if self.path:
                 try:
                     temporary = self.path + ".tmp"
                     with open(temporary, "w", encoding="utf-8") as handle:
-                        json.dump({"profiles": self.profiles, "observations": self.observations}, handle)
+                        json.dump({"profiles": self.profiles, "observations": self.observations,
+                                   "model": self.model.to_dict()}, handle)
                     os.replace(temporary, self.path)
                 except OSError:                             # learning is best-effort; routing still works
                     pass
@@ -146,6 +288,8 @@ class Router:
         self.tools, self.procedural, self.episodic = tools, procedural, episodic
         self.config = config or RouterConfig()
         self.learner = learner if learner is not None else (RouteLearner() if self.config.learn_routes else None)
+        if self.learner is not None:
+            self.learner.generalise_after, self.learner.min_skill = self.config.generalise_after, self.config.min_skill
         self._evaluate = evaluate
         self.decisions: dict[str, int] = {"reflex": 0, "react": 0, "deliberate": 0}
         self._explored = self._rechecked = 0
@@ -242,6 +386,28 @@ class Router:
             return route                                    # (a specific memory beats a general statistic)
         features = RouteLearner.features(route.signals, len(text.split()))
         runs = learner.runs(features)
+        if config.generalise and learner.trusted:
+            # The model looks at this task's own words, not only at its kind, so where it is sure it
+            # goes first: two tasks of one kind need not be treated alike.
+            risk = learner.forecast(features, text)
+            basis = f"estimated failure {risk:.0%}, learned from {learner.model.seen} outcomes across kinds of task"
+            if risk >= config.generalise_plan_above:
+                if route.mode == "deliberate":
+                    return route
+                self._rechecked += 1                        # as below: keep testing the belief now and then
+                if config.recheck_every and self._rechecked % config.recheck_every == 0:
+                    return Route(mode="react", signals=route.signals + ["rechecking"], confidence=1.0 - risk,
+                                 reason=f"rechecking: tasks worded like this are usually planned first ({basis}); "
+                                        f"trying the cheaper path again")
+                return Route(mode="deliberate", signals=route.signals + ["generalised"], confidence=risk,
+                             reason=f"experience with similar wording: the reason-act loop tends to fail on "
+                                    f"tasks like this ({basis})")
+            if risk <= config.generalise_relax_below:
+                if route.mode == "react":
+                    return route
+                return Route(mode="react", signals=route.signals + ["generalised"], confidence=1.0 - risk,
+                             reason=f"experience with similar wording: tasks like this have been solved "
+                                    f"without planning ({basis})")
         if runs >= config.min_observations:
             risk = learner.risk(features)
             if route.mode == "react" and risk >= config.plan_above:
@@ -270,4 +436,4 @@ class Router:
     def learn(self, task: str, react_failed: bool) -> None:
         """Record how the reason-act loop did on ``task``."""
         if self.learner is not None and self.config.learn_routes:
-            self.learner.update(self.task_features(task), react_failed)
+            self.learner.update(self.task_features(task), react_failed, " ".join(task.split()))

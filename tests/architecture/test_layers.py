@@ -59,7 +59,7 @@ def test_the_new_paths_import_without_any_warning():
             "from agi.infrastructure.api.server import AgentServer; print(agi.__version__)")
     done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
     assert done.returncode == 0, done.stderr
-    assert done.stdout.strip() == "0.5.0"
+    assert done.stdout.strip() == "0.6.0"
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         importlib.import_module("agi.domain.ports")

@@ -43,7 +43,7 @@ from .infrastructure.adapters.sandbox.process import Sandbox                    
 from .infrastructure.api.server import AgentServer, serve                                 # noqa: E402
 from .infrastructure.di.container import build_engine                                     # noqa: E402
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 __all__ = ["AgentServer", "AgentService", "Attempt", "CognitiveEngine", "Conversation", "EngineConfig",
            "EngineResult", "GroundingVerifier", "Guardrails", "HierarchicalMemory", "LLM", "LLMError",

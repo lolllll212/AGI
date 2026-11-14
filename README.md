@@ -24,6 +24,15 @@ plugs in through one seam (the `LLM` port in `agi.domain.ports`, with the
 clients in `agi.infrastructure.adapters.llm`). Read [Known limits](#known-limits)
 before relying on any part of it.
 
+**New in 0.6:** three changes to the core. The router now also learns across
+kinds of task, from the words of each task, and consults that model only while
+its forecasts beat guessing the average
+([The router learns which tasks need a plan](#the-router-learns-which-tasks-need-a-plan)).
+Answers are checked for names, not only figures, that nothing the agent looked
+at supports ([Guardrails, tracing and failure handling](#guardrails-tracing-and-failure-handling)).
+And a remembered lesson is credited only when the run shows it mattered
+([Lessons from experience](#lessons-from-experience)).
+
 **New in 0.5:** the package is arranged in layers (`domain`, `application`,
 `infrastructure`, plus `eval` and `training`) under `src/agi/`, with a test that
 fails if an inner layer imports an outer one. Import paths from before 0.5 still
@@ -51,7 +60,7 @@ and `pydantic` 2.
 pip install -e ".[test]"
 python -m agi                 # all eight demos, about a minute, no model needed
 python -m agi engine          # or pick: memory reasoning world collective agent react training engine
-pytest                        # 662 tests, about two minutes (one needs Docker and is skipped without it)
+pytest                        # 705 tests, about two minutes (one needs Docker and is skipped without it)
 python -m agi serve --demo    # the API and the web console on http://127.0.0.1:8000, no model needed
 ```
 
@@ -220,9 +229,37 @@ print(r.route.reason)
 print(engine.router.learner.explain())                # [('analysis + length:short', 0.9, 8)]
 ```
 
-The record is a count per profile, not a trained model, so it is easy to read
-and slow to generalise: evidence about one kind of task never moves another.
-With a memory directory it is saved to `routing.json` and survives a restart.
+The record is a count per profile, so it is easy to read and slow to
+generalise: evidence about one kind of task never moves another, and two tasks
+of one kind are treated alike however differently they are worded.
+
+So a second learner runs beside the counts. `RouteModel` is a small logistic
+model over each task's signals, length and content words, updated after every
+outcome. It can tell that tasks mentioning "reconcile" keep failing whatever
+kind they are, and send the next one to planning on first sight. Because a
+model like this can also learn nonsense, it keeps score on itself: before it
+learns from an outcome, its forecast for that task is compared with simply
+forecasting the failure rate so far. It is consulted only after 40 outcomes
+and only while it has removed at least 10% of that baseline's error
+(`generalise_after`, `min_skill`); then it overrules the rules and the counts
+where it is sure (above 80% or below 15% estimated failure). The status page
+and `/v1/stats` (`routing_model`) show how many outcomes it has seen, its
+score, whether it is trusted, and the words it leans on.
+
+| On a made-up stream where wording decides difficulty | Tasks routed correctly |
+| --- | --- |
+| Fixed rules | 56-60% |
+| Rules and per-kind counts, 300 outcomes | 56-81% |
+| ... plus the model, 80 outcomes | unchanged in 4 of 5 runs (not yet trusted) |
+| ... plus the model, 300 outcomes | 83-95% |
+
+Those figures are from five seeds of a generator written for this test, in
+which tasks containing one of two words fail nine times in ten. They show the
+mechanism works when such a pattern exists, not how often real traffic has
+one. Fed outcomes unrelated to the wording, the model stayed under the
+required score in the three runs tried and was never consulted.
+
+With a memory directory both learners are saved to `routing.json` and survive a restart.
 A kind of task that is planned first would never try the cheap path again and
 its record would freeze, so one in ten of those (`RouterConfig.recheck_every`)
 still goes to the reason-act loop; if that keeps working, the record recovers.
@@ -427,6 +464,24 @@ print(exporter.stats())
 Spans are queued and posted in batches by a background thread, so tracing never
 waits on the network. A collector that is down costs spans, never a run: a
 failed batch is retried, then dropped and counted in `stats()`.
+
+### Answers are checked against what was seen
+
+Before an answer is accepted, `GroundingVerifier` compares it with everything
+the run actually saw: the task, each tool result, the arguments of calls that
+succeeded, earlier turns of the conversation and what memory supplied.
+
+| In the answer | Not found in what was seen | What happens |
+| --- | --- | --- |
+| A figure (other than a small whole number) | Hard objection | The model is told which figure and asked to compute or look it up. If it stays, the run fails and the engine escalates. |
+| A name: a file name, an identifier, an e-mail address, a short quoted value, a proper noun | Soft objection | The model is asked once to correct or confirm it. If it stays, the answer is accepted, the result carries `unverified_name:<name>` in `flags`, the console shows it, and the run is not stored as a reusable procedure. |
+
+Names are soft because spotting one is guesswork: a capitalised word may be a
+person or just ordinary vocabulary. File names and identifiers must match
+exactly; proper nouns match in any case and with a plural or possessive ending.
+On the 24 benchmark tasks and on twelve further hand-written answers the check
+questions nothing; all of those were written here, so expect some false
+questions on real output. Switch it off with `EngineConfig(verify_names=False)`.
 
 ## Measuring and improving
 
@@ -666,7 +721,7 @@ needs no Node at run time.
 cd web
 npm install
 npm run dev        # the console on :5173 with live reload, talking to a server on :8000
-npm test           # five tests of the sign-in and chat flows against a stand-in server
+npm test           # six tests of the sign-in and chat flows against a stand-in server
 npm run build      # type-check and rebuild src/agi/infrastructure/api/static/
 ```
 
@@ -890,6 +945,19 @@ assert memory.context("write a haiku about autumn") == ""    # unrelated tasks r
   graph. Retrieval is word-based by default; pass
   `MemoryEngine(embedder=OpenAICompatEmbedder("model"))` to use a real embedding model.
 
+A lesson shown to the agent is credited by what the run did, not by whether
+the run happened to succeed while the lesson was on the page:
+
+| Lesson | Counts as helped | Counts against it | No verdict |
+| --- | --- | --- | --- |
+| A procedure ("these tools solved it") | The run used most of those tools and succeeded | ... and failed | The run went another way |
+| A fix or a warning about an error | The run used the tool involved, did not hit that error, and succeeded | The same error happened again | The run never came near it |
+| Free text from a model | The run shows its key words and succeeded | ... and failed | The run shows none of them |
+
+With no verdict the lesson's record is left alone, so a lesson that is merely
+present when easy tasks succeed no longer looks useful. `Run.credited` holds
+each verdict.
+
 ## Reasoning that checks itself
 
 A `Problem` supplies hypotheses and a `verify` function. `MCTS` and
@@ -1002,13 +1070,15 @@ wrap the interpreter yourself through `SandboxPolicy(launcher=[...])`.
   model. Routing thresholds, prompts and the plan format are untuned for any
   real model; expect to adjust them. The optimiser exists for that, and its
   tests use a stand-in whose behaviour is scripted to depend on its prompt.
-- **Routing is rules plus counting, not a trained classifier.** The reflex
+- **Routing has been tested on scripted and made-up tasks only.** The reflex
   path is chosen by fixed patterns or similarity to a stored procedure. Between
-  react and deliberate, the router counts outcomes per kind of task and follows
-  the count once it has eight; a kind is defined by a few regular-expression
-  signals and a length band, so two tasks that differ in ways those miss are
-  treated alike. It needs traffic before it helps and it is untested on real
-  traffic.
+  react and deliberate there are fixed rules, a count per kind of task (used
+  after eight outcomes) and a logistic model over words (used after 40 outcomes
+  and only while it beats a baseline). The model sees single words, not
+  meaning or word order, and its "score" compares it with a weak baseline, the
+  overall failure rate. The gain shown above is on a generator built to contain
+  a word-level pattern. It needs traffic before it helps and has never seen
+  real traffic.
 - **Tool matching knows related words, not meaning.** The default embedder
   adds a hand-written table of twelve word groups and a line of typical
   requests per built-in tool. That lifted the right tool to first place on 14
@@ -1060,7 +1130,7 @@ wrap the interpreter yourself through `SandboxPolicy(launcher=[...])`.
   or an image that fails to build. The image versions are pinned to ones known
   at the time of writing and will have newer releases. Alerts are collected but
   sent nowhere until you add a receiver.
-- **The console has been tested in a simulated browser only.** Its five tests
+- **The console has been tested in a simulated browser only.** Its six tests
   drive the sign-in and chat flows in jsdom against a stand-in server, and the
   built files were fetched from a live server; no real browser was available,
   so layout, dark mode and keyboard use have not been looked at. It has no
@@ -1091,16 +1161,22 @@ wrap the interpreter yourself through `SandboxPolicy(launcher=[...])`.
   direct exposure to the internet as unproven.
 - **The message bus is in-process.** Agents are `asyncio` tasks in one Python
   process; there is no network transport or persistence of messages.
-- **The grounding check is a heuristic.** It looks at numbers only. It catches a
-  figure that no tool returned; it does not catch a wrong name, a misread
-  result, or a number copied from the wrong row.
+- **The grounding check is a heuristic.** It catches a figure or a name that
+  appears nowhere in what the run saw. It does not catch a misread result, a
+  number copied from the wrong row, or a real name attached to the wrong fact.
+  Names are found by pattern (capitals, file extensions, quotes), so some are
+  missed, among them any name at the start of a sentence and anything written
+  in lower case, and some ordinary words will be questioned. A model that
+  repeats a made-up name after being asked gets it through, flagged.
 - **The trained policy is small and specific.** It is a linear softmax model
   over hand-written features, for one DSL of 22 list operations. The held-out
   tasks come from the same random generator as the training tasks. Rank and
   position features were added after the hand-written "second largest" task
   failed, so that task is not an independent test.
-- **Memory credit is coarse.** A recalled lesson is marked as having helped
-  whenever the run succeeded, whether or not the model used it.
+- **Memory credit is inferred from the trace.** A lesson is credited when the
+  run used the tools it concerns, which is evidence that it was relevant, not
+  proof that the model read or followed it. Free-text lessons are matched by
+  shared words only.
 - **Tool timeouts abandon, they do not kill.** A tool that overruns is reported
   as timed out but its thread keeps running until it returns. The `python` tool
   is different: the sandbox does kill it.

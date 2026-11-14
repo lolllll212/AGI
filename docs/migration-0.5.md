@@ -85,3 +85,18 @@ The names re-exported from the package root (`from agi import ...`) are unchange
 served at `/` and metrics at `/metrics` (behind the token). Pass `ui=False` and
 `metrics=False`, or `--no-ui` and `--no-metrics`, to get exactly the 0.4 surface.
 `GET /health` gained one field, `auth_required`.
+
+## 0.6
+
+No import paths changed. Three behaviours did:
+
+- **Names in answers are questioned.** An answer naming something that appears
+  nowhere in what the run saw costs one extra model call (the model is asked to
+  correct or confirm). To keep the 0.5 behaviour: `EngineConfig(verify_names=False)`.
+- **Verifiers may take `evidence`.** A custom verifier with the signature
+  `(task, answer, steps)` works as before. One that also accepts `evidence=`
+  receives the conversation so far and what memory supplied.
+- **Lesson counters grow more slowly.** `helped` and `hurt` change only when a
+  run shows the lesson mattered, so `utility` moves less per run than in 0.5.
+
+`routing.json` gained a `model` entry. Files written by 0.5 load unchanged.

@@ -10,6 +10,7 @@ const MODE_HELP: Record<string, string> = {
 
 /** The facts about a finished run: how it was answered, how long it took, and anything worth a warning. */
 export function RunMeta({ result }: { result: RunResult }) {
+  const unverified = result.flags.filter((flag) => flag.startsWith("unverified_name:")).map((flag) => flag.slice(16));
   return (
     <div className="meta">
       <Badge tone="accent" title={MODE_HELP[result.mode]}>
@@ -32,6 +33,11 @@ export function RunMeta({ result }: { result: RunResult }) {
       {result.grounded === false && (
         <Badge tone="bad" title="The answer contains figures that no tool result supports">
           unsupported figures
+        </Badge>
+      )}
+      {unverified.length > 0 && (
+        <Badge tone="warn" title="The answer names these, and nothing the agent looked at mentions them">
+          unverified: {unverified.join(", ")}
         </Badge>
       )}
       {result.success === false && !result.blocked && <Badge tone="bad">{result.stop_reason || "failed"}</Badge>}

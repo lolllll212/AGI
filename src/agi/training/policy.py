@@ -10,7 +10,7 @@ The loop is the one used by DeepCoder/DreamCoder-style systems, in miniature:
    and keep the (examples, program) pairs. The supervision is free and exact.
 2. **Train** - fit a softmax policy ``P(next op | current values, target)`` by
    stochastic gradient descent on those pairs.
-3. **Search** - :class:`~agi.reasoning.PipelineSynthesis` uses the policy as its
+3. **Search** - :class:`~agi.application.reasoning.PipelineSynthesis` uses the policy as its
    prior; every candidate is still executed and verified, so a wrong policy can
    only cost time, never correctness.
 4. **Keep learning** - :meth:`SearchPolicy.update` takes gradient steps on each

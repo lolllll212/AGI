@@ -48,8 +48,8 @@ class SemanticToolRouter:
     def __init__(self, registry: ToolRegistry, embed: Callable[[str], dict] | None = None,
                  always: Iterable[str] = (), hints: dict[str, str] | None = None):
         """``embed`` is a function, or an object with an ``embed`` method, that turns text into a sparse
-        vector (default: :class:`~agi.memory.embed.ConceptEmbedder`; pass
-        :class:`~agi.core.llm.OpenAICompatEmbedder` for real semantic matching).
+        vector (default: :class:`~agi.domain.services.embedding.ConceptEmbedder`; pass
+        :class:`~agi.infrastructure.adapters.embedding.openai_compat.OpenAICompatEmbedder` for real semantic matching).
         ``always`` tools are shown whatever the task; ``hints`` add search keywords to a tool."""
         self.registry = registry
         self._embed = getattr(embed, "embed", embed) or ConceptEmbedder().embed

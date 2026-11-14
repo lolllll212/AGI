@@ -34,7 +34,7 @@ ERROR_HINTS = {
     "AssertionError": "the output did not match the specification; re-read the expected behaviour",
     "TestFailed": "the output did not match the specification; re-read the expected behaviour",
     "TypeMismatch": "the result has the wrong type for this task; end on a step that produces the right type",
-    # tool-use failures (agi.tools / agi.react)
+    # tool-use failures (agi.application.tools / agi.application.cortex.react)
     "FileNotFound": "list the files first and use the exact name",
     "PermissionDenied": "stay inside the workspace; that location is off limits",
     "SQLError": "inspect the table's columns (query_data without sql) before writing the query",

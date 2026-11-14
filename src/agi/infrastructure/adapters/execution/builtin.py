@@ -1,6 +1,6 @@
 """Built-in tools: arithmetic, sandboxed Python, files, tabular data, HTTP, time, memory.
 
-Each factory returns one or more :class:`~agi.tools.base.Tool` objects bound to
+Each factory returns one or more :class:`~agi.domain.entities.tool.Tool` objects bound to
 the resources they are allowed to touch (a workspace directory, a sandbox, a
 memory engine). :func:`standard_tools` assembles the usual set.
 """

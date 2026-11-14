@@ -1,6 +1,6 @@
 """Execution tracing: every thought, action, observation and reward, as structured spans.
 
-A :class:`Tracer` records :class:`~agi.core.types.TraceEvent` spans in memory
+A :class:`Tracer` records :class:`~agi.domain.value_objects.records.TraceEvent` spans in memory
 and, optionally, appends them to a JSONL file as they finish. ``to_otlp``
 renders a trace in the OpenTelemetry OTLP/JSON shape, and :class:`OTLPExporter`
 posts spans to a collector as they finish - without this package depending on

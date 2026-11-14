@@ -11,7 +11,8 @@ With a model (any OpenAI-compatible endpoint; the key is read from the environme
     python -m agi chat --model MODEL --workspace DIR --memory agent.db
     python -m agi eval --model MODEL
     python -m agi train --out policy.json
-    python -m agi serve --model MODEL --workspace DIR --state DIR    # JSON API on 127.0.0.1:8000
+    python -m agi serve --model MODEL --workspace DIR --state DIR    # API and web console on 127.0.0.1:8000
+    python -m agi serve --demo                                       # the same, with a scripted stand-in model
 """
 from __future__ import annotations
 
@@ -507,15 +508,22 @@ def _command(name: str, argv: list[str]) -> int:
 
     _model_options(parser)
     if name == "serve":
+        parser.add_argument("--config", help="TOML or JSON file of settings (flags given here win over it)")
+        parser.add_argument("--demo", action="store_true",
+                            help="serve the offline demonstration model instead of a real one: it replays the "
+                                 "24 benchmark tasks, in a workspace holding their files")
         parser.add_argument("--host", default="127.0.0.1", help="address to listen on (default: local only)")
         parser.add_argument("--port", type=int, default=8000)
         parser.add_argument("--token-env", default="AGI_API_TOKEN",
                             help="environment variable holding the bearer token (required for a non-local --host)")
         parser.add_argument("--state", help="directory for the agent's long-term memory (default: in RAM)")
         parser.add_argument("--sandbox", default="process", choices=("process", "wasm", "docker", "auto"))
+        parser.add_argument("--plugins", help="directory of plugins whose tools the agent also gets "
+                                              "(plugin code runs in this process, unsandboxed)")
         parser.add_argument("--traces", help="append every trace event to this JSONL file")
         parser.add_argument("--otlp-endpoint", help="send traces to an OpenTelemetry collector, "
                                                     "e.g. http://localhost:4318/v1/traces")
+        parser.add_argument("--access-log", help="write one JSON line per request to this file ('-' = standard output)")
         parser.add_argument("--keys-file", help='JSON file of per-caller keys: {"alice": "<secret>", ...}; '
                                                 "each caller gets their own rate limit and sessions")
         parser.add_argument("--tls-cert", help="PEM certificate: serve HTTPS instead of HTTP")
@@ -524,15 +532,27 @@ def _command(name: str, argv: list[str]) -> int:
         parser.add_argument("--max-connections", type=int, default=64)
         parser.add_argument("--context-tokens", type=int, default=6000,
                             help="size of the working context kept per run (0 = unlimited)")
+        parser.add_argument("--no-ui", dest="ui", action="store_false", help="do not serve the web console at /")
+        parser.add_argument("--no-metrics", dest="metrics", action="store_false", help="do not serve /metrics")
+        parser.add_argument("--allow-framing", action="store_true",
+                            help="let other sites show the web console inside a frame (off by default)")
+        from agi.infrastructure.config import ConfigError, load_settings
+        first, _ = parser.parse_known_args(argv)
+        if first.config:
+            try:
+                parser.set_defaults(**load_settings(first.config))
+            except ConfigError as exc:
+                parser.error(str(exc))
         options = parser.parse_args(argv)
-        if not options.model:
-            parser.error("--model is required (no model is bundled with this package)")
+        if not options.model and not options.demo:
+            parser.error("--model is required (no model is bundled with this package); "
+                         "--demo serves a scripted stand-in instead")
         from agi.application.cortex.engine import EngineConfig
         from agi.application.interfaces.service import AgentService
         from agi.infrastructure.adapters.llm.openai_compat import OpenAICompatLLM
+        from agi.infrastructure.adapters.observability.logs import JsonLog
+        from agi.infrastructure.adapters.plugins.loader import PluginError, load_plugins
         from agi.infrastructure.api.server import serve
-        llm = OpenAICompatLLM(options.model, options.base_url, os.environ.get(options.api_key_env, ""),
-                              stop=["\nObservation:"])
         try:
             keys = None
             if options.keys_file:
@@ -540,18 +560,37 @@ def _command(name: str, argv: list[str]) -> int:
                     keys = json.load(handle)
                 if not isinstance(keys, dict) or not all(isinstance(v, str) for v in keys.values()):
                     parser.error("--keys-file must contain a JSON object of name -> secret")
+            workspace, examples = options.workspace, []
+            if options.demo:
+                from agi.eval import FULL_SUITE, demo_llm, demo_workspace
+                llm = demo_llm(FULL_SUITE)
+                workspace = str(demo_workspace(workspace or tempfile.mkdtemp(prefix="agi-demo-"), FULL_SUITE))
+                examples = [task.prompt for task in FULL_SUITE]
+            else:
+                llm = OpenAICompatLLM(options.model, options.base_url, os.environ.get(options.api_key_env, ""),
+                                      stop=["\nObservation:"])
+            extra_tools = load_plugins(options.plugins) if options.plugins else []
             service = AgentService.create(
-                llm, workspace=options.workspace, memory_dir=options.state, sandbox=options.sandbox,
+                llm, workspace=workspace, memory_dir=options.state, sandbox=options.sandbox,
                 network=options.network, read_only=options.read_only, trace_path=options.traces,
-                otlp_endpoint=options.otlp_endpoint,
+                otlp_endpoint=options.otlp_endpoint, extra_tools=extra_tools,
                 config=EngineConfig(max_steps=options.max_steps, context_tokens=options.context_tokens))
+            service.label = "demonstration (scripted, offline)" if options.demo else options.model
+            service.demo, service.examples = options.demo, examples
             if options.sandbox in ("wasm", "auto") and hasattr(service.engine.sandbox, "warm_up"):
                 print("preparing the WebAssembly sandbox (about a minute the first time) ...", flush=True)
                 service.engine.sandbox.warm_up()
+            if options.demo:
+                print(f"demonstration model: answers come from scripts, not from a language model "
+                      f"(workspace: {workspace})", flush=True)
+            if extra_tools:
+                print("plugin tools: " + ", ".join(tool.name for tool in extra_tools), flush=True)
             serve(service, options.host, options.port, os.environ.get(options.token_env) or None,
                   options.rate_limit, keys=keys, certfile=options.tls_cert, keyfile=options.tls_key,
-                  max_connections=options.max_connections)
-        except (ValueError, RuntimeError, OSError) as exc:
+                  max_connections=options.max_connections, metrics=options.metrics, ui=options.ui,
+                  allow_framing=options.allow_framing,
+                  access_log=JsonLog.open(options.access_log) if options.access_log else None)
+        except (ValueError, RuntimeError, OSError, PluginError) as exc:
             parser.error(str(exc))
         return 0
     if name == "run":

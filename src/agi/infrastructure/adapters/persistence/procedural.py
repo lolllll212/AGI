@@ -145,7 +145,7 @@ def align(old_task: str, new_task: str) -> dict[str, str] | None:
 class ProceduralMemory:
     def __init__(self, path: str = ":memory:", sandbox=None, clock: Callable[[], float] = time.time,
                  min_reliability: float = 0.5):
-        """``sandbox`` (an :class:`~agi.core.sandbox.Sandbox`) is needed to admit snippets."""
+        """``sandbox`` (an :class:`~agi.infrastructure.adapters.sandbox.process.Sandbox`) is needed to admit snippets."""
         self.sandbox, self.clock, self.min_reliability = sandbox, clock, min_reliability
         self._embedder = HashingEmbedder()
         self._lock = threading.RLock()

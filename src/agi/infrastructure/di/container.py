@@ -47,7 +47,7 @@ def build_engine(llm: Callable[[str], str] | None = None, workspace: str | Path 
     ``memory``: ``"auto"`` builds a :class:`HierarchicalMemory` (in RAM unless
     ``memory_dir`` is given); ``None`` runs without memory.
     ``embed``: an embedding model (an object with ``embed(text)``, such as
-    :class:`~agi.core.llm.OpenAICompatEmbedder`) used for both episodic memory
+    :class:`~agi.infrastructure.adapters.embedding.openai_compat.OpenAICompatEmbedder`) used for both episodic memory
     and tool matching. Without one, matching is by words and word groups.
     ``otlp_endpoint``: send every span to an OpenTelemetry collector, for
     example ``http://localhost:4318/v1/traces``.

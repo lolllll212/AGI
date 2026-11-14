@@ -3,10 +3,12 @@
     service = AgentService.create(llm, workspace="./data", memory_dir="./state")
     result = await service.ask("What is the total for the North region in sales.csv?")
 
-:func:`build_engine` assembles a :class:`~agi.core.engine.CognitiveEngine` with
-the standard tools, a self-healing ``python`` tool, hierarchical memory,
-guardrails and tracing. :class:`AgentService` adds what a long-running process
-needs: bounded concurrency, sessions, parallel decomposition, drift monitoring.
+:class:`AgentService` wraps a :class:`~agi.application.cortex.engine.CognitiveEngine`
+and adds what a long-running process needs: bounded concurrency, sessions,
+parallel decomposition, drift monitoring. ``create`` asks the composition root
+(:func:`agi.infrastructure.di.container.build_engine`) for an engine with the
+standard tools, a self-healing ``python`` tool, hierarchical memory, guardrails
+and tracing.
 """
 from __future__ import annotations
 
@@ -46,6 +48,10 @@ class AgentService:
         self._gates: dict[int, asyncio.Semaphore] = {}       # one per event loop
         self.in_flight = 0
         self.alarms: list = []
+        self.observers: list[Callable[[EngineResult], None]] = []   # called with every finished result
+        self.label: str | None = None                       # a name for the model, shown to callers
+        self.demo = False                                   # True when the model is a scripted stand-in
+        self.examples: list[str] = []                       # tasks worth trying, shown to callers
 
     @classmethod
     def create(cls, llm: Callable[[str], str] | None = None, *, concurrency: int = 4,
@@ -120,6 +126,11 @@ class AgentService:
             finally:
                 self.in_flight -= 1
         self._remember_turn(session, task, result)
+        for observer in list(self.observers):
+            try:
+                observer(result)
+            except Exception:                               # measuring must never break answering
+                pass
         if self.monitor is not None and not result.blocked:
             self.alarms.extend(self.monitor.observe(result))
         return result

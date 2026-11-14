@@ -2,7 +2,7 @@
 
 The default embedder is deliberately simple and deterministic. Swap in a neural
 embedding model by passing any object with ``embed(text) -> dict[int, float]``
-(sparse) to :class:`~agi.memory.engine.MemoryEngine`.
+(sparse) to :class:`~agi.application.memory.engine.MemoryEngine`.
 """
 from __future__ import annotations
 

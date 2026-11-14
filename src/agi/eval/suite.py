@@ -224,6 +224,35 @@ def reference_llm(task: EvalTask) -> Callable[[str], str]:
     return reply
 
 
+DEMO_FALLBACK = ("This server is running the offline demonstration model, which can only replay the benchmark "
+                 "tasks (and anything the reflex path answers without a model, such as arithmetic or the time). "
+                 "Start it with --model to use a real language model.")
+
+
+def demo_llm(tasks: Sequence[EvalTask]) -> Callable[[str], str]:
+    """A stand-in "model" for a demonstration server: replays the reference solution of whichever
+    benchmark task a prompt contains, and says plainly that it is a demonstration otherwise."""
+    scripts = [(task.prompt, reference_llm(task)) for task in sorted(tasks, key=lambda t: -len(t.prompt))]
+
+    def reply(prompt: str) -> str:
+        pad = prompt.rsplit("\n\nTask: ", 1)[-1]
+        for text, script in scripts:
+            if text in pad:
+                return script(prompt)
+        return f"Thought: no script covers this task.\nFinal Answer: {DEMO_FALLBACK}"
+    return reply
+
+
+def demo_workspace(directory: str | Path, tasks: Sequence[EvalTask]) -> Path:
+    """Write the fixture files every one of ``tasks`` needs into one directory."""
+    extra: dict[str, str] = {}
+    for task in tasks:
+        for name, text in task.files.items():
+            if extra.setdefault(name, text) != text:
+                raise ValueError(f"tasks disagree about the contents of {name!r}")
+    return write_fixtures(directory, extra)
+
+
 @dataclass
 class EvalResult:
     task: str

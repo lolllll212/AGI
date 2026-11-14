@@ -280,7 +280,7 @@ class ReActAgent:
     """Runs the reason-act-observe loop for one task at a time.
 
     ``llm`` is any ``callable(prompt) -> str``. ``memory`` (a
-    :class:`~agi.memory.MemoryEngine`) is optional: with it, relevant lessons are
+    :class:`~agi.application.memory.MemoryEngine`) is optional: with it, relevant lessons are
     put in front of the model and each run is recorded.
     """
 
@@ -289,7 +289,7 @@ class ReActAgent:
                  max_context_chars: int = 24_000, tags: Iterable[str] = (),
                  system: str | None = None, on_step: Callable[[ReActStep], None] | None = None,
                  working=None):
-        """``working`` is an optional :class:`~agi.memory.working.WorkingMemory`: the steps taken are
+        """``working`` is an optional :class:`~agi.application.memory.working.WorkingMemory`: the steps taken are
         then kept under its token budget (old output shortened, then summarised, then dropped) instead
         of the simpler character-based shortening. It is emptied at the start of every run."""
         self.working = working

@@ -1,4 +1,4 @@
-"""Sixteen further benchmark tasks, on top of the eight in :mod:`agi.evaluation.suite`.
+"""Sixteen further benchmark tasks, on top of the eight in :mod:`agi.eval.suite`.
 
 The core suite checks that an agent can use each tool once. These go after what
 goes wrong in practice: answers that need two or three steps chained together,

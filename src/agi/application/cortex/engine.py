@@ -11,7 +11,7 @@ A path that fails **escalates** to the next slower one (reflex -> react ->
 deliberate), so being fast is never bought with being wrong. Every model call
 and tool call is counted against one budget for the task, a model that keeps
 failing trips a circuit breaker, and nothing in here raises: the caller always
-gets an :class:`~agi.core.types.EngineResult`.
+gets an :class:`~agi.domain.value_objects.records.EngineResult`.
 """
 from __future__ import annotations
 
@@ -148,7 +148,7 @@ class CognitiveEngine:
                  config: EngineConfig | None = None, breaker: CircuitBreaker | None = None,
                  rate_limiter: RateLimiter | None = None, healer=None, tags: Iterable[str] = (),
                  embed=None):
-        """``memory`` is a :class:`~agi.memory.HierarchicalMemory` (optional); ``llm`` is any
+        """``memory`` is a :class:`~agi.application.memory.HierarchicalMemory` (optional); ``llm`` is any
         ``callable(prompt) -> str`` (optional: without one only the reflex path can answer);
         ``embed`` is an embedding function or object used to match tasks to tools."""
         self.llm, self.memory, self.healer = llm, memory, healer

@@ -39,7 +39,7 @@ and `pydantic` 2.
 pip install -e ".[test]"
 python -m agi                 # all eight demos, about a minute, no model needed
 python -m agi engine          # or pick: memory reasoning world collective agent react training engine
-pytest                        # 592 tests, about two minutes (one needs Docker and is skipped without it)
+pytest                        # 593 tests, about two minutes (one needs Docker and is skipped without it)
 ```
 
 Optional extras, each with a built-in fallback when absent:

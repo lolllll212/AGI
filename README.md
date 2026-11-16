@@ -19,6 +19,11 @@ around one: tools, a control loop, memory, search, verification, training and
 governance. Everything runs offline with deterministic stand-ins; a real model
 plugs in through one seam (`agi.llm`).
 
+Where the field stands on skill acquisition, breadth × depth, long-horizon
+autonomy and grounded memory, what this package already covers, and the six
+proposals that follow from the gaps — with a reproduction of the memory-revision
+defect — is in [`docs/research/agi-agenda.md`](docs/research/agi-agenda.md).
+
 ## Quick start
 
 Requires Python 3.10+ on a POSIX system; developed and tested on Python 3.11 on

@@ -22,7 +22,8 @@ plugs in through one seam (`agi.llm`).
 Where the field stands on skill acquisition, breadth × depth, long-horizon
 autonomy and grounded memory, what this package already covers, and the six
 proposals that follow from the gaps — with a reproduction of the memory-revision
-defect — is in [`docs/research/agi-agenda.md`](docs/research/agi-agenda.md).
+defect — is in [`docs/research/agi-agenda.md`](docs/research/agi-agenda.md), and a Rust
+implementation of the brain-grounded autonomy design is in [`agi-rs/`](agi-rs/).
 
 ## Quick start
 

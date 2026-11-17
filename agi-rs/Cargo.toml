@@ -1,0 +1,15 @@
+[package]
+name = "agi-core"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.70"
+description = "Autonomy kernel: drives as homeostatic deficiencies, reward prediction error as the progress signal, selection over generation, habituation as termination, revision-aware memory."
+license = "MIT"
+
+# Deliberately zero dependencies: builds offline, no supply chain, no async runtime.
+[dependencies]
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
